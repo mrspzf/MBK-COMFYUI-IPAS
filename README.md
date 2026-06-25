@@ -1,4 +1,4 @@
-# mbk-comfyui-ipb_amcsystem
+# MBK-COMFYUI-INTELLIPROMPTAUTOMATION-SYSTEM
 
 MBK-Distributor 自动重构发布包。
 
