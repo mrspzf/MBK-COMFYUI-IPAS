@@ -214,7 +214,7 @@ class PromptApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title('MBK-ComfyUI 智能提示词全自动化多媒体创作系统_开源版本')
+        self.root.title('MBK-COMFYUI-IPAS')
         self.root.geometry('1200x900')
         self.root.protocol('WM_DELETE_WINDOW', self.on_closing)
         self.ollama_manager = OllamaManager()
@@ -1546,39 +1546,46 @@ class PromptApp:
 
     def _find_comfyui_path(self):
         """
-        在程序运行文件夹的前后三层内搜索 ComfyUI 文件夹。
-        确保路径中不包含多余的 'proj'。
+        以程序运行文件夹为基准，在上下五层、兄弟及子目录中广泛搜索有效的 ComfyUI 文件夹。
         """
         start_dir = os.path.dirname(os.path.abspath(__file__))
+
+        def is_valid_comfyui(path):
+            """验证给定的路径是否是一个有效的 ComfyUI 目录。"""
+            if path and os.path.isdir(path):
+                has_main = os.path.exists(os.path.join(path, 'main.py'))
+                has_web_dir = os.path.isdir(os.path.join(path, 'web'))
+                if has_main and has_web_dir:
+                    return True
+            return False
+        search_roots = []
         current = start_dir
-        for _ in range(4):
-            candidate = os.path.join(current, 'ComfyUI')
-            if os.path.isdir(candidate):
-                if os.path.exists(os.path.join(candidate, 'main.py')) or os.path.exists(os.path.join(candidate, 'nodes.py')):
-                    return candidate
+        for _ in range(6):
+            search_roots.append(current)
             parent = os.path.dirname(current)
             if parent == current:
                 break
             current = parent
-
-        def search_down(path, depth):
-            if depth > 3:
-                return None
+        for root_path in search_roots:
+            if os.path.basename(root_path.lower()) == 'comfyui':
+                if is_valid_comfyui(root_path):
+                    return root_path
+            candidate = os.path.join(root_path, 'ComfyUI')
+            if is_valid_comfyui(candidate):
+                return candidate
             try:
-                items = os.listdir(path)
-            except Exception:
-                return None
-            for item in items:
-                full_path = os.path.join(path, item)
-                if os.path.isdir(full_path):
-                    if item.lower() == 'comfyui':
-                        if os.path.exists(os.path.join(full_path, 'main.py')) or os.path.exists(os.path.join(full_path, 'nodes.py')):
-                            return full_path
-                    res = search_down(full_path, depth + 1)
-                    if res:
-                        return res
-            return None
-        return search_down(start_dir, 1)
+                for item_name in os.listdir(root_path):
+                    item_path = os.path.join(root_path, item_name)
+                    if os.path.isdir(item_path):
+                        if item_name.lower() == 'comfyui':
+                            if is_valid_comfyui(item_path):
+                                return item_path
+                        deeper_candidate = os.path.join(item_path, 'ComfyUI')
+                        if is_valid_comfyui(deeper_candidate):
+                            return deeper_candidate
+            except OSError:
+                continue
+        return None
 
     def _init_watermark(self):
         """
