@@ -10,10 +10,13 @@ import threading
 import subprocess
 import time
 import requests
+import uuid
 import glob
 import re
 import traceback
 from collections import deque, Counter
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import os, sys, json, requests, time, threading, traceback
 try:
     import openai
@@ -26,7 +29,7 @@ OLLAMA_BASE_URL = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
 MODEL_LIBRARY_URL = 'https://ollama.com/library'
 
 # --- Cross-Module Symbol Injection ---
-try: from mbk_tool.ollama_manager import * 
+try: from mbk_tool.ollama_utils import * 
 except: pass
 try: from mbk_tool.prompt_app import * 
 except: pass
@@ -45,39 +48,103 @@ except ImportError:
 
 MODEL_LIBRARY_URL = 'https://ollama.com/library'
 
-SOP_PROMPT_PREFIX = '\n您是一位顶级的提示词（Prompt）优化大师。当您接收到用户的请求时，必须严格遵循以下SOP（标准作业程序）三步流程来思考和创作，确保输出结果的专业性和稳定性：\n\n**第一步：确立【风格和主体】**\n*   您必须首先从用户提供的风格和创意描述中，精准地提炼出核心的"艺术风格"和"核心主体"。这是整个创作的基石。\n\n**第二步：进行【创意润色】**\n*   以第一步确立的风格和主体为基础，对用户的原始创意进行专业的文学性润色和想象力扩展。\n*   目标是生成一段内容更丰富、细节更饱满、画面感更强的详细中文描述，为下一步的结构化做好准备。\n\n**第三步：应用【分类指令】进行调整和补充**\n*   使用第二步生成的"润色版描述"作为核心素材。\n*   严格对照当前任务的"专业分类指令"，逐项检查、调整和补充，确保最终的提示词在结构上完整、在内容上不缺失、在逻辑上不冲突。\n\n**最终输出：**\n*   您必须将严格遵循以上三步流程后得到的、高质量的、结构化的中文提示词，以稳定、纯净的JSON格式返回。\n\n---\n现在，请根据以下具体的【专业的分类指令】来执行任务：\n'
+OLLAMA_BASE_URL = 'http://localhost:11434'
 
-SYSTEM_PROMPTS = {'文生图': SOP_PROMPT_PREFIX + '\n**Task Type: Text-to-Image (Stable Diffusion)**\n**Core Requirement:** For the text-to-image task, strictly generate according to the following format:\n\n**Text-to-Image Specific Structure:**\n1. Quality Control: masterpiece, best quality, ultra-detailed, 8k resolution, photorealistic\n2. Subject Description: emotion, action, gesture, subject details, character features, expressions, poses\n3. Composition Elements: composition, camera angle, perspective, framing\n4. Environment & Scene: background, setting, atmosphere, props\n5. Lighting Effects: lighting setup, shadows, highlights, mood lighting\n6. Material & Texture: surface textures, materials, fabric details\n7. Detail Enhancement: intricate details, sharp focus, depth of field\n\n**Weighting System:**\n- Core Elements: (keyword:1.15-1.25)\n- Important Elements: (keyword:1.05-1.15)\n- Normal Elements: keyword\n- De-emphasized Elements: (keyword:0.8-0.9)\n\n', '中文润色': '您是一位专业的中文创意大师。您的任务是根据用户的请求，进行润色、扩展和优化，生成一段充满想象力、细节丰富、文采飞扬的创意描述。您的最终输出必须严格遵循以下格式：以 `[START_TEXT]` 作为开头，紧接着是完整的纯中文创意描述文本，最后以 `[END_TEXT]` 作为结尾。在这两个标记之间，绝对禁止包含任何额外的标题、解释或标记。', 'Chinese Segmentation': '您是一位精通AI提示词，可以精确区分提示词内容的专家。您将收到一个JSON对象，其中包含一个\'creative_text\'（源文本）块和一个\'target_segments\'（目标分段）数组。\n\n数组中的每一项代表一个最终的提示词分段，它是一个JSON对象，包含一个唯一的\'display_name\'（显示名称）和一组\'keywords\'（关键词）。这组关键词**通常包含两个元素**：一个"性质词"（定义提示词的生成方式）和一个"功能词"（定义提示词的描述主题）,这些词语决定了该段提示词的内容构成。\n\n**您的核心任务是**：\n1.  **分配正面内容**：根据每个分段的"功能词"定义，将\'creative_text\'的**全部文本内容**，按逻辑关联性，**完整且无遗漏地**拆分并分配到所有`"keywords": ["positive", ...]`的段落中。\n2.  **生成负面内容**：对于每一个`"keywords": ["negative", ...]`的段落，您必须基于其**同名"功能词"**的描述内容，生成对应的负面描述。\n\n---\n\n### 定义与规则\n\n#### 性质词 (Property Words)\n\n*   **性质词: `positive`**\n    *   所有内容都必须是关于"希望看到什么"的正面描述。这是您根据功能词从\'creative_text\'中直接提取和整理的内容。\n*   **性质词: `negative`**\n    *   所有内容都必须是关于"需要避免什么"的负面描述。这部分内容是根据对应的`positive`内容**生成**的。\n    *   **核心生成原则（反义词转换策略）**:\n        1.  **禁止简单否定**: 严禁仅在正面词前加"不"、"非"、"无"或"不是...而是..."。必须直接使用语义上的**强对立词**或**反向状态词**。\n        2.  **具象对立化**: 对照正面内容中的具体事物或情景，生成其物理属性或逻辑状态上的对立面。\n    *   **执行示例（必须遵循此逻辑）**:\n        *   若正面是"湖面平静"，负面应为"波澜起伏、湍急水流"，而不是"湖面不平静"。\n        *   若正面是"晨光柔和"，负面应为"刺眼强光、昏暗阴森"。\n        *   若正面是"细小光点跳舞"，负面应为"光点模糊、消失、漆黑一片"。\n        *   若正面是"古典汉服"，负面应为"现代装束、西式服装"。\n        *   若正面是"衣袂柔软"，负面应为"僵硬死板、线条突兀"。\n        *   若正面是"面容清晰"，负面应为"面容模糊、五官扭曲、遮挡"。\n        *   若正面描述了某个主体，负面可包含"该主体不存在、画面空洞"。\n\n#### 功能词 (Function Words) 详细定义\n\n##### 1. 场景与构图 (Scene & Composition)\n\n*   **关键词**: `base` (主要), `main` (别名)\n*   **核心目标**: 描述画面的基础结构，包括整体环境、主体和辅助元素的相关信息。\n*   **具体定义**:\n    *   **场景环境 (Scene Setting)**: 描述故事发生的基础背景，例如"在森林深处"、"一个赛博朋克城市的街角"、"空旷的白色房间"。\n    *   **主体与元素 (Subjects & Elements)**: 定义画面中包含哪些核心主体或物体，例如"一个女孩和一只白狼"、"一艘巨大的宇宙飞船"。\n    *   **构图与布局 (Composition & Layout)**: 描述主体与背景、主体与主体之间的空间关系和位置。使用专业的构图词汇，例如"女孩位于画面中央"、"白狼在她身后"、"采用对称构图"、"远景是连绵的雪山"。\n*   **示例**: "一个男人站在山顶，背对观众，采用中心构图，远景是日落和云海。"\n\n##### 2. 艺术风格与氛围 (Art Style & Atmosphere)\n\n*   **关键词**: `refine`\n*   **核心目标**: 描述画面的整体艺术风格、光影、色调和情感氛围。\n*   **具体定义**:\n    *   **光影与色彩 (Lighting & Color)**: 描述光源方向、光线质感和整体色调。例如"柔和的午后阳光"、"霓虹灯光照亮"、"电影感色调"、"伦勃朗式用光"、"高对比度黑白照片"。\n    *   **艺术风格 (Art Style)**: 指定一个明确的艺术流派、艺术家风格或媒介。例如"梵高风格"、"印象派"、"日本浮世绘"、"虚幻引擎渲染"、"水彩画"、"3D辛烷值渲染"。\n    *   **氛围与意境 (Mood & Atmosphere)**: 描述画面希望传达的情感或感觉。例如"神秘的"、"宁静的"、"充满未来科技感"、"忧郁的氛围"。\n*   **示例**: "电影感光效，柔和的边缘光，整体为冷色调，营造出一种宁静而孤寂的氛围，水彩画风格。"\n\n##### 3. 细节与叙事 (Details & Narrative)\n\n*   **关键词**: `details` (主要), `inpaint` / `fix` (特定流程别名)\n*   **核心目标**: 专注于刻画画面中的高优先级区域，添加具体细节、定义互动和情节。\n*   **具体定义**:\n    *   **重点区域刻画 (Key Area Focus)**: 对指定的角色或物体进行精细描述。例如"主角的眼睛是蓝色的，眼神坚定"、"机器人手臂上有复杂的机械刻线"。\n    *   **互动与情节 (Interaction & Plot)**: 描述角色之间、角色与物体之间的互动或正在发生的事件。例如"女孩轻轻抚摸着白狼的头"、"男人正在修理一个复杂的装置"。\n    *   **关联物细节 (Associated Details)**: 补充与主体相关的环境或背景细节，以增强故事感。例如"桌子上放着一杯冒着热气的咖啡和一本翻开的书"。\n*   **示例**: "男人穿着一件磨损的皮夹克，夹克上有徽章；他正在操作一个全息屏幕，屏幕上显示着复杂的代码。"\n\n##### 4. 人物形态 (Human Form)\n\n*   **关键词**: `person`\n*   **核心目标**: 精确描述画面中主要人物的姿态、动作和穿着。\n*   **具体定义**:\n    *   **姿态与动作 (Pose & Action)**: 使用明确的词汇描述身体的姿势和动态。例如"全身像，正面站立"、"坐姿，双腿交叉"、"正在奔跑，身体前倾"、"从后面看，弯腰拾取东西"。\n    *   **服装描述 (Apparel Description)**: 详细描述人物的穿着。例如"穿着一件白色的连衣裙"、"戴着一顶黑色的礼帽"、"身穿未来派风格的盔甲"。\n    *   **身体朝向 (Body Orientation)**: 明确人物相对于镜头的方向。例如"侧脸"、"面朝镜头"、"背对观众"。\n*   **示例**: "一个女人，全身像，穿着哥特式长裙，坐在王座上，双手交叠放在膝上，正面视角。"\n\n##### 5. 精准解剖结构 (Precise Anatomy)\n\n*   **关键词**: `face` / `hand` / `foot`\n*   **核心目标**: 描述人类最容易出错的特定身体部位，施加严格的解剖学和形态学约束。\n*   **具体定义**:\n    *   **解剖学准确性 (Anatomical Accuracy)**: 强制要求生成的结构符合真实的人体解剖学。例如"一只完整的手，包含五根手指"、"对称、结构正确的脸部特征"。\n    *   **形态与线条 (Form & Lines)**: 要求轮廓清晰，形态精准，无扭曲或模糊。例如"清晰的手指线条"、"精致的脸部轮廓"、"脚的结构正确"。\n    *   **光影一致性 (Lighting Consistency)**: 确保该部位的光影表现与 `refine` 中定义的整体光源保持一致。\n*   **示例**:\n    *   `face`: "一张完美对称的脸，五官精致，皮肤质感细腻，符合解剖学结构。"\n    *   `hand`: "一只形态优美的手，五指分明，线条清晰，没有畸变。"\n\n\n**输出格式:**\n您的最终输出必须是一个严格的JSON对象，其键名必须严格匹配`target_segments` 数组中提供的`display_name`。内容完全使用中文，被包裹在`[START_JSON]`和`[END_JSON]`标记之间，并且不包含任何额外的解释或标记。\n\n  例如，如果输入是:\n```json\n{\n  "creative_text": "一个美丽的公主走在城堡的花园里，阳光明媚，但远处的龙看起来有点模糊和变形。",\n  "target_segments": [\n    {\n      "display_name": "Positive Prompt (Base)",\n      "keywords": ["positive", "base"]\n    },\n    {\n      "display_name": "Negative Prompt",\n      "keywords": ["negative"]\n    }\n  ]\n}\n```\n\n  您的输出必须是:\n```json\n{\n  "Positive Prompt (Base)": "一个美丽的公主走在城堡的花园里，阳光明媚。",\n  "Negative Prompt": "远处的龙看起来有点模糊和变形。"\n}\n```\n', 'English Translation': 'You are an expert translator specializing in AI art prompts. You will receive a JSON object where keys are unique \'display_name\'s and values are segmented Chinese prompts.\n\nYour task is to translate each Chinese segment into accurate and fluent English, Your translation must faithfully reproduce all subjects, entities, and details; omission of any content is prohibited.\n\nYour final output must be a strict JSON object, enclosed between `[START_JSON]` and `[END_JSON]` markers. Purely in English, The keys in your output must exactly match the input keys.\n\nFor example, if the input is:\n```json\n{\n  "Positive Prompt (FLUX Base)": "一个美丽的女孩，动漫风格",\n  "Negative Prompt (FLUX Base)": "丑陋，模糊"\n}\n```\n\nYour output must be:\n```json\n{\n  "Positive Prompt (FLUX Base)": "a beautiful girl, anime style",\n  "Negative Prompt (FLUX Base)": "ugly, blurry"\n}```', 'Supplement Instructions': 'You are a standardization expert specializing in professional AI art prompts. You will receive a JSON object of `english_prompts` and a string of `professional_instructions`.Each "professional_instructions" document contains metric entries and weight parameters.\n \nYour task is: to add semantically relevant metric entries and weight parameters to every \nreceived prompt segment. Follow these rules precisely for each segment:\n\n\n1.  **Add Quality‑Control Entry**: First, analyze the `professional_instructions` text. If you locate any metric entry whose name contains the word "quality," prepend the full content of that entry to the beginning of every `positive` prompt segment. Do not duplicate descriptions.\n\n2. **Finding Indicator Keywords**: Analyze the keywords in a segment’s `display_name` (e.g., "base", "face") and the character states and object relationships described in the `english_prompts` text. From the `professional_instructions`, select entries that have a strong semantic correlation with the (keywords, states, relationships). For each selected entry, pick one word from its content,these words are the indicator keywords, making sure no duplicate words are added.\n\n\n3. **Applying Weight Parameters**: Analyze the meaning of each weight name, tag the selected indicator keywords with the appropriate weights, and then insert those weighted keywords between the `positive` prompt text and the quality‑control content of the corresponding paragraph. Duplicate usage of the same keyword within a paragraph of the same name is prohibited.\n\n4.  **Output Format**: Your final output must be a strict JSON object. Its keys must exactly match the input `display_name`s. The values must be entirely in English. The entire object must be enclosed between `[START_JSON]` and `[END_JSON]` markers, with no extra explanations.\n\nFor example, if the input is `{"Positive Prompt (Base)": "a girl", "Negative Prompt (Base)": "ugly"}`,\nyour output must be:\n```json\n{"Positive Prompt (Base)": "(masterpiece, best quality, ultra-detailed, 8k resolution) (cinematic lighting (base:1.2)) a girl ",\n"Negative Prompt (Base)": "(worst quality, low quality, blurry) ugly"}\n```'}
+SOP_PROMPT_PREFIX = '\n您是一位顶级的提示词（Prompt）优化大师。当您接收到用户的请求时，必须严格遵循以下SOP（标准作业程序）三步流程来思考和创作，确保输出结果的专业性和稳定性：\n\n**第一步：确立【风格和主体】**\n*   您必须首先从用户提供的风格和创意描述中，精准地提炼出核心的“艺术风格”和“核心主体”。这是整个创作的基石。\n\n**第二步：进行【创意润色】**\n*   以第一步确立的风格和主体为基础，对用户的原始创意进行专业的文学性润色和想象力扩展。\n*   目标是生成一段内容更丰富、细节更饱满、画面感更强的详细中文描述，为下一步的结构化做好准备。\n\n**第三步：应用【分类指令】进行调整和补充**\n*   使用第二步生成的“润色版描述”作为核心素材。\n*   严格对照当前任务的“专业分类指令”，逐项检查、调整和补充，确保最终的提示词在结构上完整、在内容上不缺失、在逻辑上不冲突。\n\n**最终输出：**\n*   您必须将严格遵循以上三步流程后得到的、高质量的、结构化的中文提示词，以稳定、纯净的JSON格式返回。\n\n---\n现在，请根据以下具体的【专业的分类指令】来执行任务：\n'
 
-WORKFLOWS = {'文生图片': {'type': '文生图', 'positive_node_title': 'Positive Prompt', 'negative_node_title': 'Negative Prompt'}}
+SYSTEM_PROMPTS = {'文生图': SOP_PROMPT_PREFIX + '\n**Task Type: Text-to-Image (Stable Diffusion)**\n**Core Requirement:** For the text-to-image task, strictly generate according to the following format:\n\n**Text-to-Image Specific Structure:**\n1. Quality Control: masterpiece, best quality, ultra-detailed, 8k resolution, photorealistic\n2. Subject Description: emotion, action, gesture, subject details, character features, expressions, poses\n3. Composition Elements: composition, camera angle, perspective, framing\n4. Environment & Scene: background, setting, atmosphere, props\n5. Lighting Effects: lighting setup, shadows, highlights, mood lighting\n6. Material & Texture: surface textures, materials, fabric details\n7. Detail Enhancement: intricate details, sharp focus, depth of field\n\n**Weighting System:**\n- Core Elements: (keyword:1.15-1.25)\n- Important Elements: (keyword:1.05-1.15)\n- Normal Elements: keyword\n- De-emphasized Elements: (keyword:0.8-0.9)\n\n', '文生图-FLUX': SOP_PROMPT_PREFIX + "\n**Task Type: Text-to-Image (FLUX Model)**\n**Core Requirement:** The FLUX model prefers more natural, descriptive language rather than traditional keyword stacking. Convert the user's creative idea into a high-quality text-to-image prompt suitable for the FLUX model.\n\n**FLUX Prompt Core Principles:**\n1.  **Natural Language First**: Use complete, descriptive sentences to build the scene.\n2.  **Brevity and Core Focus**: Capture the core creative idea, avoiding excessive trivial details and weight modifiers.\n3.  **Quality Tags**: Add common high-quality tags at the beginning or end of the sentence.\n4.  **Clear Style Definition**: Clearly describe the desired art style, medium, or artist.\n\n**text-to-Video (flux) Weights:**\n\n1.  Subject Emphasis: To ensure the main subject is the focus.\n    -   Example: A cinematic film still of a (knight in shining armor:1.1-1.2) standing on a cliff.\n2.  Style & Artist Strength: To increase the intensity of a specific style.\n    -   Example: A portrait of a woman, (in the style of Van Gogh:1.15-1.25).\n3.  Composition & Camera Control: To give priority to a specific shot type.\n    -   Example: A futuristic city, (dramatic low-angle shot:1.05-1.15), towering skyscrapers.\n4.  Atmosphere & Lighting: To emphasize a particular mood or light effect.\n    -   Example: A mysterious forest at night, (eerie volumetric lighting:1.1-1.2) filtering through the\n  trees.\n\n", '中文润色': '您是一位专业的中文创意大师。您的任务是根据用户的请求，进行润色、扩展和优化，生成一段充满想象力、细节丰富、文采飞扬的创意描述。您的最终输出必须严格遵循以下格式：以 `[START_TEXT]` 作为开头，紧接着是完整的纯中文创意描述文本，最后以 `[END_TEXT]` 作为结尾。在这两个标记之间，绝对禁止包含任何额外的标题、解释或标记。', 'Chinese Segmentation': '您是一位精通AI提示词，可以精确区分提示词内容的专家。您将收到一个JSON对象，其中包含一个\'creative_text\'（源文本）块和一个\'target_segments\'（目标分段）数组。\n\n数组中的每一项代表一个最终的提示词分段，它是一个JSON对象，包含一个唯一的\'display_name\'（显示名称）和一组\'keywords\'（关键词）。这组关键词**通常包含两个元素**：一个“性质词”（定义提示词的生成方式）和一个“功能词”（定义提示词的描述主题）,这些词语决定了该段提示词的内容构成。\n\n**您的核心任务是**：\n1.  **分配正面内容**：根据每个分段的“功能词”定义，将\'creative_text\'的**全部文本内容**，按逻辑关联性，**完整且无遗漏地**拆分并分配到所有`"keywords": ["positive", ...]`的段落中。\n2.  **生成负面内容**：对于每一个`"keywords": ["negative", ...]`的段落，您必须基于其**同名“功能词”**的描述内容，生成对应的负面描述。\n\n---\n\n### 定义与规则\n\n#### 性质词 (Property Words)\n\n*   **性质词: `positive`**\n    *   所有内容都必须是关于“希望看到什么”的正面描述。这是您根据功能词从\'creative_text\'中直接提取和整理的内容。\n*   **性质词: `negative`**\n    *   所有内容都必须是关于“需要避免什么”的负面描述。这部分内容是根据对应的`positive`内容**生成**的，而不是提取的。\n    *   **生成步骤**:\n        1.  **基础内容**: 针对其对应正面内容中的形容词，生成反义词（例如：`美丽` -> `丑陋`）。\n        2.  **补充内容**: 对照其对应正面内容中的具体事物或情景，生成反面或无关的描述（例如：`精致的奖杯` -> `变形的手`，`宏伟的宫殿` -> `现代建筑`）。\n\n#### 功能词 (Function Words) 详细定义\n\n##### 1. 场景与构图 (Scene & Composition)\n\n*   **关键词**: `base` (主要), `main` (别名)\n*   **核心目标**: 描述画面的基础结构，包括整体环境、主体和辅助元素的相关信息。\n*   **具体定义**:\n    *   **场景环境 (Scene Setting)**: 描述故事发生的基础背景，例如“在森林深处”、“一个赛博朋克城市的街角”、“空旷的白色房间”。\n    *   **主体与元素 (Subjects & Elements)**: 定义画面中包含哪些核心主体或物体，例如“一个女孩和一只白狼”、“一艘巨大的宇宙飞船”。\n    *   **构图与布局 (Composition & Layout)**: 描述主体与背景、主体与主体之间的空间关系和位置。使用专业的构图词汇，例如“女孩位于画面中央”、“白狼在她身后”、“采用对称构图”、“远景是连绵的雪山”。\n*   **示例**: “一个男人站在山顶，背对观众，采用中心构图，远景是日落和云海。”\n\n##### 2. 艺术风格与氛围 (Art Style & Atmosphere)\n\n*   **关键词**: `refine`\n*   **核心目标**: 描述画面的整体艺术风格、光影、色调和情感氛围。\n*   **具体定义**:\n    *   **光影与色彩 (Lighting & Color)**: 描述光源方向、光线质感和整体色调。例如“柔和的午后阳光”、“霓虹灯光照亮”、“电影感色调”、“伦勃朗式用光”、“高对比度黑白照片”。\n    *   **艺术风格 (Art Style)**: 指定一个明确的艺术流派、艺术家风格或媒介。例如“梵高风格”、“印象派”、“日本浮世绘”、“虚幻引擎渲染”、“水彩画”、“3D辛烷值渲染”。\n    *   **氛围与意境 (Mood & Atmosphere)**: 描述画面希望传达的情感或感觉。例如“神秘的”、“宁静的”、“充满未来科技感”、“忧郁的氛围”。\n*   **示例**: “电影感光效，柔和的边缘光，整体为冷色调，营造出一种宁静而孤寂的氛围，水彩画风格。”\n\n##### 3. 细节与叙事 (Details & Narrative)\n\n*   **关键词**: `details` (主要), `inpaint` / `fix` (特定流程别名)\n*   **核心目标**: 专注于刻画画面中的高优先级区域，添加具体细节、定义互动和情节。\n*   **具体定义**:\n    *   **重点区域刻画 (Key Area Focus)**: 对指定的角色或物体进行精细描述。例如“主角的眼睛是蓝色的，眼神坚定”、“机器人手臂上有复杂的机械刻线”。\n    *   **互动与情节 (Interaction & Plot)**: 描述角色之间、角色与物体之间的互动或正在发生的事件。例如“女孩轻轻抚摸着白狼的头”、“男人正在修理一个复杂的装置”。\n    *   **关联物细节 (Associated Details)**: 补充与主体相关的环境或背景细节，以增强故事感。例如“桌子上放着一杯冒着热气的咖啡和一本翻开的书”。\n*   **示例**: “男人穿着一件磨损的皮夹克，夹克上有徽章；他正在操作一个全息屏幕，屏幕上显示着复杂的代码。”\n\n##### 4. 人物形态 (Human Form)\n\n*   **关键词**: `person`\n*   **核心目标**: 精确描述画面中主要人物的姿态、动作和穿着。\n*   **具体定义**:\n    *   **姿态与动作 (Pose & Action)**: 使用明确的词汇描述身体的姿势和动态。例如“全身像，正面站立”、“坐姿，双腿交叉”、“正在奔跑，身体前倾”、“从后面看，弯腰拾取东西”。\n    *   **服装描述 (Apparel Description)**: 详细描述人物的穿着。例如“穿着一件白色的连衣裙”、“戴着一顶黑色的礼帽”、“身穿未来派风格的盔甲”。\n    *   **身体朝向 (Body Orientation)**: 明确人物相对于镜头的方向。例如“侧脸”、“面朝镜头”、“背对观众”。\n*   **示例**: “一个女人，全身像，穿着哥特式长裙，坐在王座上，双手交叠放在膝上，正面视角。”\n\n##### 5. 精准解剖结构 (Precise Anatomy)\n\n*   **关键词**: `face` / `hand` / `foot`\n*   **核心目标**: 描述人类最容易出错的特定身体部位，施加严格的解剖学和形态学约束。\n*   **具体定义**:\n    *   **解剖学准确性 (Anatomical Accuracy)**: 强制要求生成的结构符合真实的人体解剖学。例如“一只完整的手，包含五根手指”、“对称、结构正确的脸部特征”。\n    *   **形态与线条 (Form & Lines)**: 要求轮廓清晰，形态精准，无扭曲或模糊。例如“清晰的手指线条”、“精致的脸部轮廓”、“脚的结构正确”。\n    *   **光影一致性 (Lighting Consistency)**: 确保该部位的光影表现与 `refine` 中定义的整体光源保持一致。\n*   **示例**:\n    *   `face`: “一张完美对称的脸，五官精致，皮肤质感细腻，符合解剖学结构。”\n    *   `hand`: “一只形态优美的手，五指分明，线条清晰，没有畸变。”\n\n\n**输出格式:**\n您的最终输出必须是一个严格的JSON对象，其键名必须严格匹配`target_segments` 数组中提供的`display_name`。内容完全使用中文，被包裹在`[START_JSON]`和`[END_JSON]`标记之间，并且不包含任何额外的解释或标记。\n\n  例如，如果输入是:\n```json\n{\n  "creative_text": "一个美丽的公主走在城堡的花园里，阳光明媚，但远处的龙看起来有点模糊和变形。",\n  "target_segments": [\n    {\n      "display_name": "Positive Prompt (Base)",\n      "keywords": ["positive", "base"]\n    },\n    {\n      "display_name": "Negative Prompt",\n      "keywords": ["negative"]\n    }\n  ]\n}\n```\n\n  您的输出必须是:\n```json\n{\n  "Positive Prompt (Base)": "一个美丽的公主走在城堡的花园里，阳光明媚。",\n  "Negative Prompt": "远处的龙看起来有点模糊和变形。"\n}\n```\n', 'English Translation': 'You are an expert translator specializing in AI art prompts.\n\nYou will receive a JSON object containing:\n1) `prompt_groups`: grouped segments by full node name.  \n   - each group includes `full_name` and `segments`\n   - each segment includes `display_name`, `keywords`, `type` (`positive` or `negative`), and `text`\n2) `flat_prompts`: a flat map where keys are unique `display_name` and values are Chinese prompt text\n\nCore rules:\n1. Translate each segment accurately and fluently into English.\n2. Keep semantic correspondence strictly inside each group and each segment.\n3. Do not mix content across `display_name`s, even when multiple positive/negative segments exist.\n4. Preserve all entities, attributes, actions, style details, and constraints. No omissions.\n\nOutput rules:\n1. Output a strict JSON object enclosed by `[START_JSON]` and `[END_JSON]`.\n2. Keys in output must exactly match every key in input `flat_prompts`.\n3. Values must be purely English translations for the corresponding segment.\n4. No extra explanation.\n\nExample input:\n```json\n{\n  "prompt_groups": [\n    {\n      "full_name": "Base Prompt",\n      "segments": [\n        {\n          "display_name": "Positive Prompt (Base)",\n          "keywords": ["positive", "base"],\n          "type": "positive",\n          "text": "一个美丽的女孩，动漫风格"\n        },\n        {\n          "display_name": "Negative Prompt (Base)",\n          "keywords": ["negative", "base"],\n          "type": "negative",\n          "text": "丑陋，模糊"\n        }\n      ]\n    }\n  ],\n  "flat_prompts": {\n    "Positive Prompt (Base)": "一个美丽的女孩，动漫风格",\n    "Negative Prompt (Base)": "丑陋，模糊"\n  }\n}\n```\n\nExample output:\n```json\n{\n  "Positive Prompt (Base)": "a beautiful girl, anime style",\n  "Negative Prompt (Base)": "ugly, blurry"\n}\n```', 'Supplement Instructions': 'You are a standardization expert specializing in professional AI art prompts. You will receive a JSON object of `english_prompts` and a string of `professional_instructions`.Each “professional_instructions” document contains metric entries and weight parameters.\n \nYour task is: to add semantically relevant metric entries and weight parameters to every \nreceived prompt segment. Follow these rules precisely for each segment:\n\n\n1.  **Add Quality‑Control Entry**: First, analyze the `professional_instructions` text. If you locate any metric entry whose name contains the word “quality,” prepend the full content of that entry to the beginning of every `positive` prompt segment. Do not duplicate descriptions.\n\n2. **Finding Indicator Keywords**: Analyze the keywords in a segment’s `display_name` (e.g., “base”, “face”) and the character states and object relationships described in the `english_prompts` text. From the `professional_instructions`, select entries that have a strong semantic correlation with the (keywords, states, relationships). For each selected entry, pick one word from its content,these words are the indicator keywords, making sure no duplicate words are added.\n\n\n3. **Applying Weight Parameters**: Analyze the meaning of each weight name, tag the selected indicator keywords with the appropriate weights, and then insert those weighted keywords between the `positive` prompt text and the quality‑control content of the corresponding paragraph. Duplicate usage of the same keyword within a paragraph of the same name is prohibited.\n\n4.  **Output Format**: Your final output must be a strict JSON object. Its keys must exactly match the input `display_name`s. The values must be entirely in English. The entire object must be enclosed between `[START_JSON]` and `[END_JSON]` markers, with no extra explanations.\n\nFor example, if the input is `{"Positive Prompt (Base)": "a girl", "Negative Prompt (Base)": "ugly"}`,\nyour output must be:\n```json\n{"Positive Prompt (Base)": "(masterpiece, best quality, ultra-detailed, 8k resolution) (cinematic lighting (base:1.2)) a girl ",\n"Negative Prompt (Base)": "(worst quality, low quality, blurry) ugly"}\n```'}
 
-PROFESSIONAL_STYLES = ['默认风格 (Default Style)', '电影感 (Cinematic)', '照片写实 (Photorealistic)', '概念艺术 (Concept Art)', '数字绘画 (Digital Painting)', '幻想艺术 (Fantasy Art)', '科幻风格 (Science Fiction)', '赛博朋克 (Cyberpunk)', '蒸汽朋克 (Steampunk)', '复古风格 (Retro Style)', '极简主义 (Minimalism)', '哥特风格 (Gothic)', '抽象艺术 (Abstract)', '超 surrealism (Surrealism)', '印象派 (Impressionism)', '波普艺术 (Pop Art)', '装饰风艺术 (Art Deco)', '新艺术运动 (Art Nouveau)', '巴洛克风格 (Baroque)', '未来主义 (Futurism)', '立体主义 (Cubism)', '古典主义 (Classicism)', '文艺复兴 (Renaissance)', '动漫风格 (Anime Style)', '漫画风格 (Comic Book Style)', '卡通风格 (Cartoon Style)', '水墨画 (Ink Wash Painting)', '水彩画 (Watercolor)', '素描 (Sketch)', '插画 (Illustration)', '人像摄影 (Portrait Photography)', '风光摄影 (Landscape Photography)', '微距摄影 (Macro Photography)', '长曝光 (Long Exposure)', '双重曝光 (Double Exposure)', '黄金时刻 (Golden Hour)', '蓝调时刻 (Blue Hour)', '航拍摄影 (Aerial Photography)', '单色摄影 (Monochrome)', '虚幻引擎 (Unreal Engine)', '辛烷值渲染 (Octane Render)', '光线追踪 (Ray Tracing)', '卡通渲染 (Cel Shading)', '低多边形 (Low Poly)', '体素艺术 (Voxel Art)', '等距视角 (Isometric)', '3D模型 (3D Model)']
+MODEL_PARAMS_CONFIG = {'qw3.5': {'num_ctx': 16384, 'temperature': 0.7}, 'qwen3.5': {'num_ctx': 16384, 'temperature': 0.7}, 'qw3.5:cloud': {'num_ctx': 32768}, 'qwen3.5:397b-cloud': {'num_ctx': 32768}, 'mistral-large-3:675b-cloud': {'num_ctx': 32768}, 'qwen3-vl:235b-cloud': {'num_ctx': 32768}, 'qwen3-next:80b-a3b-instruct-q8_0': {'num_ctx': 16384}, 'qwen3.5:122b-a10b': {'num_ctx': 16384}, 'nemotron-3-super:120b': {'num_ctx': 16384}, 'gpt-oss:120b': {'num_ctx': 24576}, 'qwen3.5:27b-bf16': {'num_ctx': 16384}, 'ernie-4.5-37b-a3b-thinking-brainstorm20x.q8-0': {'num_ctx': 16384}, 'gemma4:31b-it-bf16': {'num_ctx': 16384}, 'ernie-4.5-37b-a3b-thinking-brainstorm20x.q8-0:latest': {'num_ctx': 16384}, 'glm-5.1:cloud': {'num_ctx': 32768}, 'kimi-k2.5:cloud': {'num_ctx': 32768}, 'gemini-3-flash-preview': {'num_ctx': 32768}}
+
+WORKFLOWS = {'文生图片': {'type': '文生图', 'positive_node_title': 'Positive Prompt', 'negative_node_title': 'Negative Prompt'}, '文生图-FLUX': {'type': '文生图-FLUX', 'positive_node_title': 'Positive Prompt (FLUX Base)', 'negative_node_title': 'Negative Prompt (FLUX Base)'}}
+
+PROFESSIONAL_STYLES = ['默认风格 (Default Style)', '电影感 (Cinematic)', '照片写实 (Photorealistic)', '概念艺术 (Concept Art)', '数字绘画 (Digital Painting)', '幻想艺术 (Fantasy Art)', '科幻风格 (Science Fiction)', '赛博朋克 (Cyberpunk)', '蒸汽朋克 (Steampunk)', '复古风格 (Retro Style)', '极简主义 (Minimalism)', '哥特风格 (Gothic)', '抽象艺术 (Abstract)', '超现实主义 (Surrealism)', '印象派 (Impressionism)', '波普艺术 (Pop Art)', '装饰风艺术 (Art Deco)', '新艺术运动 (Art Nouveau)', '巴洛克风格 (Baroque)', '未来主义 (Futurism)', '立体主义 (Cubism)', '古典主义 (Classicism)', '文艺复兴 (Renaissance)', '动漫风格 (Anime Style)', '漫画风格 (Comic Book Style)', '卡通风格 (Cartoon Style)', '水墨画 (Ink Wash Painting)', '水彩画 (Watercolor)', '素描 (Sketch)', '插画 (Illustration)', '人像摄影 (Portrait Photography)', '风光摄影 (Landscape Photography)', '微距摄影 (Macro Photography)', '长曝光 (Long Exposure)', '双重曝光 (Double Exposure)', '黄金时刻 (Golden Hour)', '蓝调时刻 (Blue Hour)', '航拍摄影 (Aerial Photography)', '单色摄影 (Monochrome)', '虚幻引擎 (Unreal Engine)', '辛烷值渲染 (Octane Render)', '光线追踪 (Ray Tracing)', '卡通渲染 (Cel Shading)', '低多边形 (Low Poly)', '体素艺术 (Voxel Art)', '等距视角 (Isometric)', '3D模型 (3D Model)']
+
+def get_model_params(model_name):
+    """根据模型名称获取推荐的上下文参数，适配 Ollama 20.4+ 交互算法
+    
+    注意: 移除 num_predict 避免限制或强制模型生成长度，让模型自然停止。
+    """
+    if not model_name:
+        return {'num_ctx': 16384}
+    model_lower = model_name.lower()
+    for key in ['qw3.5', 'qwen3.5']:
+        if key in model_lower:
+            return MODEL_PARAMS_CONFIG[key]
+    if model_name in MODEL_PARAMS_CONFIG:
+        return MODEL_PARAMS_CONFIG[model_name]
+    for (config_name, params) in MODEL_PARAMS_CONFIG.items():
+        if model_name.startswith(config_name.replace(':latest', '')) or config_name.startswith(model_name.split(':')[0]):
+            return params
+    if any((x in model_lower for x in [':cloud', '-cloud', 'api-', 'claude-'])):
+        return {'num_ctx': 32768}
+    if 'gpt-' in model_lower and 'oss' not in model_lower:
+        return {'num_ctx': 16384}
+    if any((x in model_lower for x in ['120b', '122b'])):
+        return {'num_ctx': 16384}
+    if any((x in model_lower for x in ['235b', '397b', '675b', '80b', '400b'])):
+        return {'num_ctx': 16384}
+    if any((x in model_lower for x in ['27b', '31b', '37b', '70b', '72b'])):
+        return {'num_ctx': 16384}
+    if any((x in model_lower for x in ['7b', '8b', '13b', '14b', '32b'])):
+        return {'num_ctx': 16384}
+    return {'num_ctx': 16384}
 
 class OllamaManager:
 
     def __init__(self):
         self.process = None
         self.is_running = False
+        self.base_url = OLLAMA_BASE_URL
+        self.session = self._build_session()
+
+    def _build_session(self):
+        """构建带重试能力的HTTP会话，提高本地服务短暂抖动时的稳定性。"""
+        session = requests.Session()
+        retry = Retry(total=2, connect=2, read=2, backoff_factor=0.3, status_forcelist=(429, 500, 502, 503, 504), allowed_methods=frozenset(['GET', 'POST']))
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        return session
+
+    def _request(self, method, path, timeout=5, **kwargs):
+        """统一HTTP请求入口，避免散落的URL与异常处理。"""
+        url = f'{self.base_url}{path}'
+        return self.session.request(method, url, timeout=timeout, **kwargs)
 
     def start_ollama(self):
-        """启动OLLAMA服务"""
+        """启动OLLAMA服务，增加对 Mac 环境的路径探测"""
         try:
-            response = requests.get('http://localhost:11434/api/tags', timeout=2)
+            response = self._request('GET', '/api/tags', timeout=2)
             if response.status_code == 200:
                 self.is_running = True
                 return True
         except:
             pass
         try:
+            cmd = ['ollama', 'serve']
+            if sys.platform == 'darwin':
+                paths_to_check = ['/usr/local/bin/ollama', '/opt/homebrew/bin/ollama', 'ollama']
+                for p in paths_to_check:
+                    try:
+                        subprocess.run([p, '--version'], capture_output=True, timeout=3)
+                        cmd[0] = p
+                        break
+                    except:
+                        continue
             if os.name == 'nt':
-                self.process = subprocess.Popen(['ollama', 'serve'], creationflags=subprocess.CREATE_NO_WINDOW)
+                self.process = subprocess.Popen(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
             else:
-                self.process = subprocess.Popen(['ollama', 'serve'])
-            time.sleep(3)
-            response = requests.get('http://localhost:11434/api/tags', timeout=5)
-            if response.status_code == 200:
-                self.is_running = True
-                return True
+                self.process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(10):
+                time.sleep(1.2)
+                try:
+                    response = self._request('GET', '/api/tags', timeout=3)
+                    if response.status_code == 200:
+                        self.is_running = True
+                        return True
+                except Exception:
+                    continue
         except Exception as e:
             print(f'启动OLLAMA失败: {e}')
             return False
@@ -93,7 +160,7 @@ class OllamaManager:
     def get_available_models(self):
         """获取可用模型列表"""
         try:
-            response = requests.get('http://localhost:11434/api/tags', timeout=5)
+            response = self._request('GET', '/api/tags', timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 return [model['name'] for model in data.get('models', [])]
@@ -104,7 +171,7 @@ class OllamaManager:
     def get_running_models(self):
         """获取当前正在运行的模型"""
         try:
-            response = requests.get('http://localhost:11434/api/ps', timeout=5)
+            response = self._request('GET', '/api/ps', timeout=5)
             if response.status_code == 200:
                 data = response.json()
                 return [model['name'] for model in data.get('models', [])]
@@ -115,7 +182,7 @@ class OllamaManager:
     def pull_model(self, model_name, callback=None):
         """拉取模型"""
         try:
-            response = requests.post('http://localhost:11434/api/pull', json={'name': model_name}, stream=True, timeout=300)
+            response = self._request('POST', '/api/pull', json={'name': model_name}, stream=True, timeout=(10, 1800))
             for line in response.iter_lines():
                 if line and callback:
                     try:
@@ -129,14 +196,25 @@ class OllamaManager:
             return False
 
     def search_online_models(self, keyword=''):
-        """搜索在线模型 (开源版已禁用)"""
+        """从ollama.ai/library搜索模型"""
+        try:
+            import re
+            response = self.session.get(MODEL_LIBRARY_URL, timeout=10)
+            if response.status_code == 200:
+                model_names = re.findall('href="/library/([^"\\\\]+)"\\s*class="[^\\"]*font-medium"', response.text)
+                model_names = [name for name in model_names if '/' not in name]
+                if keyword:
+                    return [name for name in model_names if keyword.lower() in name.lower()]
+                return model_names
+        except Exception as e:
+            print(f'搜索在线模型失败: {e}')
         return []
 
 class PromptApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title('mbk-comfyui-ipb_amcsystem 开源版')
+        self.root.title('MBK-ComfyUI 智能提示词全自动化多媒体创作系统_开源版本')
         self.root.geometry('1200x900')
         self.root.protocol('WM_DELETE_WINDOW', self.on_closing)
         self.ollama_manager = OllamaManager()
@@ -159,27 +237,101 @@ class PromptApp:
         self.english_translated = False
         self.english_supplemented = False
         self.setup_ui()
-        self.root.after(1500, self.initial_ollama_check)
-        self.root.after(3000, self._init_watermark)
-        self.root.after(5000, self._ensure_watermark_integrity)
-        self.root.bind('<Configure>', self._sync_wm_position)
+        try:
+            self._init_watermark()
+            self._ensure_watermark_integrity()
+        except Exception:
+            pass
+        self.initial_ollama_check()
 
     def initial_ollama_check(self):
         """程序启动时检查OLLAMA状态"""
         threading.Thread(target=self.refresh_ollama_status, daemon=True).start()
 
+    def _create_openai_client(self):
+        """统一创建OpenAI兼容客户端，集中管理超时与重试行为。"""
+        return openai.OpenAI(api_key='dummy', base_url=f'{OLLAMA_BASE_URL}/v1', timeout=240, max_retries=2)
+
+    def _is_cloud_model(self, model_name):
+        if not model_name:
+            return False
+        model_lower = model_name.lower()
+        return any((tag in model_lower for tag in [':cloud', '-cloud', 'api-', 'claude-', 'gemini-']))
+
+    def _get_request_profile(self, model_name):
+        """
+        针对本地大模型与云端模型给出差异化超时与重试配置。
+        重点提高 qwen3.5 / gemma4 与 cloud 的容错性。
+        """
+        model_lower = (model_name or '').lower()
+        if self._is_cloud_model(model_name):
+            return {'timeout': 420, 'retries': 4}
+        if any((tag in model_lower for tag in ['qwen3.5', 'qw3.5', 'gemma4', '31b', '70b', '72b', '120b', '122b'])):
+            return {'timeout': 300, 'retries': 3}
+        return {'timeout': 180, 'retries': 2}
+
+    def _build_extra_body(self, model_name):
+        """构建 Ollama 额外参数，移除 num_predict 并保持模型热加载。"""
+        params = get_model_params(model_name)
+        num_ctx = params.get('num_ctx', 16384)
+        extra_body = {'options': {'num_ctx': num_ctx}}
+        if not self._is_cloud_model(model_name):
+            extra_body['keep_alive'] = '30m'
+        return extra_body
+
+    def _chat_completion_with_retry(self, model_name, messages, temperature=0.7, json_mode=False, max_tokens=None):
+        """统一的对话调用层：重试、超时、JSON模式降级策略。
+        
+        适配 Ollama 20.4+ 的 reasoning_content (CoT) 支持。
+        """
+        if not self.client:
+            raise RuntimeError('OLLAMA客户端未初始化')
+        profile = self._get_request_profile(model_name)
+        is_reasoning_model = any((x in model_name.lower() for x in ['gemma', 'qw', 'gpt-oss', 'reasoning', 'thought', 'r1']))
+        extra_body = self._build_extra_body(model_name)
+        if is_reasoning_model:
+            extra_body['think'] = True
+        request_kwargs = {'messages': messages, 'model': model_name, 'temperature': temperature, 'extra_body': extra_body, 'timeout': profile['timeout']}
+        if max_tokens is not None:
+            request_kwargs['max_tokens'] = max_tokens
+        if json_mode:
+            if not is_reasoning_model:
+                request_kwargs['stop'] = ['[END_JSON]']
+        elif not is_reasoning_model:
+            request_kwargs['stop'] = ['[END_TEXT]']
+        last_error = None
+        for attempt in range(profile['retries']):
+            try:
+                completion = self.client.chat.completions.create(**request_kwargs)
+                msg = completion.choices[0].message
+                if not msg.content:
+                    reasoning = getattr(msg, 'reasoning_content', None) or getattr(msg, 'thought', None)
+                    if reasoning:
+                        msg.content = reasoning
+                return completion
+            except Exception as e:
+                last_error = e
+                err_text = str(e).lower()
+                if attempt < profile['retries'] - 1:
+                    time.sleep(min(1.5 * (attempt + 1), 4.0))
+                else:
+                    break
+        raise last_error
+
     def setup_ui(self):
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill='both', expand=True, padx=10, pady=10)
         style = ttk.Style(self.root)
         style.configure('Execute.TButton', foreground='white', background='#c00000', font=('微软雅黑', 12, 'bold'))
         style.map('Execute.TButton', background=[('active', '#e00000'), ('disabled', '#a0a0a0')], foreground=[('disabled', 'darkgrey')])
+        style.configure('Run.TButton', foreground='white', background='#0055ff', font=('微软雅黑', 10, 'bold'))
+        style.map('Run.TButton', background=[('active', '#0077ff'), ('disabled', '#a0a0a0')], foreground=[('disabled', 'darkgrey')])
         style = ttk.Style(self.root)
         style.configure('Yellow.Horizontal.TProgressbar', background='gold')
-        main_frame = ttk.Frame(self.notebook)
-        self.notebook.add(main_frame, text='主控制台')
-        setup_frame = ttk.Frame(self.notebook)
-        self.notebook.add(setup_frame, text='OLLAMA设置')
+        main_frame = ttk.Frame(notebook)
+        notebook.add(main_frame, text='主控制台')
+        setup_frame = ttk.Frame(notebook)
+        notebook.add(setup_frame, text='OLLAMA设置')
         self.setup_main_tab(main_frame)
         self.setup_ollama_tab(setup_frame)
 
@@ -202,7 +354,14 @@ class PromptApp:
         self.specific_workflow_combo = ttk.Combobox(workflow_frame, textvariable=self.specific_workflow_var, state='readonly', width=30)
         self.specific_workflow_combo.grid(row=0, column=3, sticky='w', padx=5)
         self.specific_workflow_combo.bind('<<ComboboxSelected>>', self.on_specific_workflow_change)
-        ttk.Button(workflow_frame, text='识别工作流', command=self.recognize_workflows_in_folder).grid(row=0, column=4, sticky='w', padx=10)
+        workflow_frame.columnconfigure(4, weight=1)
+        button_frame = ttk.Frame(workflow_frame)
+        button_frame.grid(row=0, column=4, sticky='ew', padx=10)
+        ttk.Button(button_frame, text='识别工作流', command=self.recognize_workflows_in_folder).pack(side='left')
+        self.exit_button = ttk.Button(button_frame, text='退 出', command=self.on_closing)
+        self.exit_button.pack(side='right', padx=(5, 0), ipady=12)
+        self.run_comfyui_button = ttk.Button(button_frame, text='运 行', command=self.run_comfyui_workflow, state='disabled')
+        self.run_comfyui_button.pack(side='right', padx=(10, 0), ipady=12)
         status_frame = ttk.LabelFrame(parent, text='3. OLLAMA状态', padding='10')
         status_frame.place(relx=1.0, rely=0, anchor='ne', x=-10, y=10)
         self.ollama_status_var = tk.StringVar(value='未连接')
@@ -255,6 +414,11 @@ class PromptApp:
         self.chinese_input.pack(fill='both', expand=True)
         self.create_context_menu(self.chinese_input)
         self.chinese_input.bind('<KeyRelease>', lambda event: self.update_button_states())
+        self.preview_frame = ttk.Frame(input_text_frame)
+        self.preview_label = ttk.Label(self.preview_frame, text='暂无预览图', anchor='center')
+        self.preview_label.pack(fill='both', expand=True)
+        self.preview_label.bind('<Double-1>', self.open_preview_file)
+        self.current_preview_file = None
         convert_frame = ttk.Frame(input_frame)
         convert_frame.pack(fill='x', pady=(10, 0))
         self.convert_cn_button = ttk.Button(convert_frame, text='1.中文创意', command=self.generate_creative_chinese, state='disabled')
@@ -291,24 +455,25 @@ class PromptApp:
         ttk.Button(control_frame, text='刷新状态', command=self.refresh_ollama_status).pack(side='left', padx=5)
         self.running_model_var = tk.StringVar(value='当前加载: 无')
         ttk.Label(control_frame, textvariable=self.running_model_var, foreground='navy').pack(side='left', padx=10)
-        download_frame = ttk.LabelFrame(left_frame, text='在线模型下载 (开源版不可用)', padding='10')
+        download_frame = ttk.LabelFrame(left_frame, text='在线模型下载', padding='10')
         download_frame.pack(fill='both', expand=True)
         search_bar_frame = ttk.Frame(download_frame)
         search_bar_frame.pack(fill='x', pady=(0, 5))
         ttk.Label(search_bar_frame, text='搜索关键词:').pack(side='left')
         self.search_model_var = tk.StringVar()
-        search_entry = ttk.Entry(search_bar_frame, textvariable=self.search_model_var, width=20, state='disabled')
+        search_entry = ttk.Entry(search_bar_frame, textvariable=self.search_model_var, width=20)
         search_entry.pack(side='left', padx=5, expand=True, fill='x')
-        search_button = ttk.Button(search_bar_frame, text='搜索', command=self.search_and_display_models, state='disabled')
+        search_button = ttk.Button(search_bar_frame, text='搜索', command=self.search_and_display_models)
         search_button.pack(side='left', padx=5)
         search_result_frame = ttk.Frame(download_frame)
         search_result_frame.pack(fill='both', expand=True, pady=(5, 5))
-        self.online_model_listbox = tk.Listbox(search_result_frame, height=10, state='disabled')
+        self.online_model_listbox = tk.Listbox(search_result_frame, height=10)
         self.online_model_listbox.pack(side='left', fill='both', expand=True)
         online_scrollbar = ttk.Scrollbar(search_result_frame, orient='vertical', command=self.online_model_listbox.yview)
         online_scrollbar.pack(side='right', fill='y')
         self.online_model_listbox.config(yscrollcommand=online_scrollbar.set)
-        self.download_progress_var = tk.StringVar(value='开源版不支持在线下载')
+        self.online_model_listbox.bind('<<ListboxSelect>>', self.on_online_model_select)
+        self.download_progress_var = tk.StringVar(value='')
         ttk.Label(download_frame, textvariable=self.download_progress_var).pack(fill='x')
         model_frame = ttk.LabelFrame(right_frame, text='模型管理', padding='10')
         model_frame.pack(fill='both', expand=True)
@@ -433,7 +598,7 @@ class PromptApp:
         path = filedialog.askdirectory(initialdir=self.proj_path.get())
         if path:
             self.proj_path.set(path)
-            self.status_var.set(f'已选择新路径，请点击"识别工作流"')
+            self.status_var.set(f'已选择新路径，请点击“识别工作流”')
             self.workflow_type_combo.set('')
             for combo in [self.workflow_type_combo, self.specific_workflow_combo]:
                 combo.set('')
@@ -585,10 +750,10 @@ class PromptApp:
         IMAGE_INPUT_NODE_TYPES = {'LoadImage'}
         has_video_output = any((t in VIDEO_OUTPUT_NODE_TYPES for t in node_types))
         has_image_input = any((t in IMAGE_INPUT_NODE_TYPES for t in node_types))
-        if has_video_output:
-            return '图生视频' if has_image_input else '文生视频'
+        if has_video_output or has_image_input:
+            return '未分类'
         else:
-            return '图生图' if has_image_input else '文生图'
+            return '文生图'
 
     def _get_downstream_consumers(self, node_id, nodes_map, workflow_data):
         """辅助函数，用于查找一个节点的所有直接下游消费者。"""
@@ -682,7 +847,7 @@ class PromptApp:
             self.start_ollama_button.config(state='disabled')
             self.stop_ollama_button.config(state='normal')
             self.refresh_model_list()
-            self.client = openai.OpenAI(api_key='dummy', base_url='http://localhost:11434/v1')
+            self.client = self._create_openai_client()
         else:
             self.ollama_status_var.set('启动失败')
             self.ollama_status_label.config(foreground='red')
@@ -706,13 +871,13 @@ class PromptApp:
 
     def refresh_ollama_status(self):
         """刷新OLLAMA状态，并更新UI显示"""
-        self.root.after(0, lambda : self.status_var.set('正在刷新状态...'))
+        self.status_var.set('正在刷新状态...')
 
         def task():
             is_running = False
             running_models = []
             try:
-                response = requests.get('http://localhost:11434/api/tags', timeout=2)
+                response = self.ollama_manager._request('GET', '/api/tags', timeout=2)
                 if response.status_code == 200:
                     is_running = True
                     running_models = self.ollama_manager.get_running_models()
@@ -726,7 +891,7 @@ class PromptApp:
                     self.start_ollama_button.config(state='disabled')
                     self.stop_ollama_button.config(state='normal')
                     if not self.client:
-                        self.client = openai.OpenAI(api_key='dummy', base_url='http://localhost:11434/v1')
+                        self.client = self._create_openai_client()
                     self.refresh_model_list()
                     if running_models:
                         self.ollama_status_var.set('模型运行中')
@@ -834,7 +999,7 @@ class PromptApp:
                 if not self.client:
                     self.root.after(0, lambda : self.status_var.set('加载失败: OLLAMA客户端未初始化'))
                     return
-                list(self.client.chat.completions.create(model=model_name, messages=[{'role': 'user', 'content': 'Hi'}], max_tokens=1, stream=True))
+                self._chat_completion_with_retry(model_name=model_name, messages=[{'role': 'user', 'content': 'Hi'}], temperature=0.1, max_tokens=1)
                 self.root.after(10000, self.refresh_ollama_status)
             except Exception as e:
                 self.root.after(0, lambda err=str(e): self.status_var.set(f'加载模型失败: {err}'))
@@ -867,7 +1032,7 @@ class PromptApp:
         """
         根据程序当前状态和用户的要求，更新四个主要操作按钮的激活状态。
         """
-        is_model_ready = len(self.running_models_cache) > 0
+        is_model_ready = self.ollama_manager.is_running and bool(self.selected_model_for_conversion.get())
         is_workflow_selected = bool(self.specific_workflow_var.get())
         has_injection_points = False
         if is_workflow_selected:
@@ -898,7 +1063,7 @@ class PromptApp:
 
     def _prepare_and_run_ai_task(self, button, status_text, system_prompt_key, user_content_json, callback):
         if not self.selected_model_for_conversion.get():
-            messagebox.showwarning('警告', '请先在"OLLAMA设置"标签页中选择并加载一个AI模型')
+            messagebox.showwarning('警告', '请先在“OLLAMA设置”标签页中选择并加载一个AI模型')
             return
         self.conversion_progressbar.start(40)
         self.status_var.set(status_text)
@@ -906,7 +1071,10 @@ class PromptApp:
 
         def ai_task():
             try:
-                completion = self.client.chat.completions.create(messages=[{'role': 'system', 'content': SYSTEM_PROMPTS[system_prompt_key]}, {'role': 'user', 'content': json.dumps(user_content_json, ensure_ascii=False)}], model=self.selected_model_for_conversion.get(), temperature=0.7, response_format={'type': 'json_object'})
+                model_name = self.selected_model_for_conversion.get()
+                ollama_params = get_model_params(model_name)
+                temp = ollama_params.get('temperature', 0.7)
+                completion = self._chat_completion_with_retry(model_name=model_name, messages=[{'role': 'system', 'content': SYSTEM_PROMPTS[system_prompt_key]}, {'role': 'user', 'content': json.dumps(user_content_json, ensure_ascii=False)}], temperature=temp, json_mode=True)
                 response_text = completion.choices[0].message.content
                 self.root.after(0, callback, response_text)
             except Exception as e:
@@ -921,18 +1089,28 @@ class PromptApp:
 
     def _process_ai_response(self, response_text, expected_keys, success_callback):
         try:
-            match = re.search('\\[START_JSON\\](.*?)\\[END_JSON\\]', response_text, re.DOTALL)
+            cot_patterns = ['<thought>.*?</thought>', '<reasoning>.*?</reasoning>', '<\\|channel\\|>thought\\n.*?<channel\\|>']
+            processed_text = response_text
+            for pattern in cot_patterns:
+                processed_text = re.sub(pattern, '', processed_text, flags=re.DOTALL | re.IGNORECASE)
+            match = re.search('\\[START_JSON\\](.*?)(\\[END_JSON\\]|\\Z)', processed_text, re.DOTALL)
             json_string = ''
             if match:
                 json_string = match.group(1).strip()
             else:
-                fallback_match = re.search('{\\s*.*\\s*}', response_text, re.DOTALL)
                 try:
-                    first_brace = response_text.index('{')
-                    last_brace = response_text.rindex('}')
-                    json_string = response_text[first_brace:last_brace + 1]
+                    first_brace = processed_text.index('{')
+                    last_brace = processed_text.rindex('}')
+                    json_string = processed_text[first_brace:last_brace + 1]
                 except ValueError:
-                    raise ValueError('AI响应中未找到[START_JSON]...[END_JSON]标记，也未能定位到有效的JSON对象边界。')
+                    try:
+                        first_brace = response_text.index('{')
+                        last_brace = response_text.rindex('}')
+                        json_string = response_text[first_brace:last_brace + 1]
+                    except ValueError:
+                        raise ValueError('AI响应中未找到[START_JSON]标记，也未能定位到有效的JSON对象。')
+            json_string = re.sub('^```json\\s*', '', json_string, flags=re.IGNORECASE)
+            json_string = re.sub('\\s*```$', '', json_string)
             result = json.loads(json_string)
             missing_keys = [k for k in expected_keys if k not in result]
             if missing_keys:
@@ -948,48 +1126,30 @@ class PromptApp:
         self._reset_states(keep_creative_input=True)
         user_text = self.chinese_input.get('1.0', tk.END).strip()
         selected_style = self.style_var.get()
-        image_path = self.image_path_var.get().strip()
-        is_image_workflow = self.current_workflow_type in ['图生图', '图生视频']
-        messages = []
-        if is_image_workflow and image_path and os.path.exists(image_path):
-            self.status_var.set('正在读取图片并准备分析...')
-            try:
-                with open(image_path, 'rb') as image_file:
-                    base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-                image_format = os.path.splitext(image_path)[1].lower().replace('.', '')
-                if image_format == 'jpg':
-                    image_format = 'jpeg'
-                messages = [{'role': 'user', 'content': [{'type': 'text', 'text': f"你是一位顶级的图像分析专家和创意大师。请使用中文，精准、完整、并富有想象力地详细描述这张图片的所有内容，包括主体、环境、氛围、光线、构图和潜在的动态。你的描述将作为后续AI生成视频的灵感来源，因此请务必详尽。请在描述时自然地融合'{selected_style}'风格。"}, {'type': 'image_url', 'image_url': {'url': f'data:image/{image_format};base64,{base64_image}'}}]}]
-                self.status_var.set('正在分析图片并生成中文创意...')
-            except Exception as e:
-                self.on_task_error(f'读取或处理图片时出错: {e}')
-                return
-        else:
-            if not user_text:
-                if is_image_workflow:
-                    messagebox.showwarning('提示', '这是一个图片工作流，建议您先选择一张图片以获得更好的创意描述。\n\n您也可以继续手动输入文字创意。')
-                    return
-                else:
-                    messagebox.showwarning('警告', '请输入您的中文创意。')
-                    return
-            content = f"请将以下描述文字('{user_text}')融合'{selected_style}'风格，进行润色、扩展和优化，使其更生动、更富有想象力、更包含细节和文采。"
-            messages = [{'role': 'system', 'content': SYSTEM_PROMPTS['中文润色']}, {'role': 'user', 'content': content}]
-            self.status_var.set('正在根据文本生成中文创意...')
+        if not user_text:
+            messagebox.showwarning('警告', '请输入您的中文创意。')
+            return
+        content = f"请将以下描述文字('{user_text}')融合'{selected_style}'风格，进行润色、扩展和优化，使其更生动、更富有想象力、更包含细节和文采。"
+        messages = [{'role': 'system', 'content': SYSTEM_PROMPTS['中文润色']}, {'role': 'user', 'content': content}]
+        self.status_var.set('正在根据文本生成中文创意...')
 
         def callback(response_text):
             try:
-                match = re.search('\\START_TEXT\\ (.*?)\\[END_TEXT\\]', response_text, re.DOTALL)
+                cot_patterns = ['<thought>.*?</thought>', '<\\|thought\\|>.*?<\\|thought\\|>', '<reasoning>.*?</reasoning>', '<\\|channel\\|>thought\\n.*?<channel\\|>', '<\\|begin_of_thought\\|>.*?<\\|end_of_thought\\|>', '思考过程：.*?(\\n\\n|\\Z)']
+                processed_text = response_text
+                for pattern in cot_patterns:
+                    processed_text = re.sub(pattern, '', processed_text, flags=re.DOTALL | re.IGNORECASE)
+                match = re.search('\\[START_TEXT\\](.*?)(\\[END_TEXT\\]|\\Z)', processed_text, re.DOTALL)
                 if match:
                     self.creative_chinese_text = match.group(1).strip()
                 else:
-                    prefix_pattern = '^(?:THINKING|THINK|思考|分析|ANSWER|Action|输出|Result|正文)[:：].*?(\\n|\\Z)'
-                    cleaned_text = re.sub(prefix_pattern, '', response_text, flags=re.MULTILINE | re.DOTALL).strip()
-                    if not cleaned_text:
-                        raise ValueError('AI响应中未找到[START_TEXT]...[END_TEXT]标记，且无法回退清洗。')
-                    self.creative_chinese_text = cleaned_text
+                    prefix_pattern = '^(?:THINKING|THINK|思考|分析|ANSWER|Action|输出|Result|正文|总结)[:：\\s]*'
+                    cleaned_text = re.sub(prefix_pattern, '', processed_text, count=1).strip()
                     cleaned_text = cleaned_text.replace('[START_TEXT]', '').replace('[END_TEXT]', '')
-                    self.creative_chinese_text = cleaned_text.strip()
-                    self.creative_chinese_text = cleaned_text if cleaned_text else response_text.strip()
+                    if not cleaned_text.strip():
+                        self.creative_chinese_text = response_text.strip()
+                    else:
+                        self.creative_chinese_text = cleaned_text.strip()
                 self._update_ui_with_creative_chinese(self.creative_chinese_text)
                 self.creative_chinese_generated = True
                 self.status_var.set('1. 中文创意已生成')
@@ -999,20 +1159,20 @@ class PromptApp:
                 self.conversion_progressbar.stop()
                 self.update_button_states()
         if not self.selected_model_for_conversion.get():
-            messagebox.showwarning('警告', '请先在"OLLAMA设置"标签页中选择并加载一个AI模型。\n\n(注意: 图片分析功能需要多模态模型, 如 LLaVA)')
+            messagebox.showwarning('警告', '请先在“OLLAMA设置”标签页中选择并加载一个AI模型。')
             return
         self.conversion_progressbar.start(40)
         self.convert_cn_button.config(state='disabled')
 
         def ai_task():
             try:
-                completion = self.client.chat.completions.create(messages=messages, model=self.selected_model_for_conversion.get(), temperature=0.7)
+                model_name = self.selected_model_for_conversion.get()
+                ollama_params = get_model_params(model_name)
+                temp = ollama_params.get('temperature', 0.7)
+                completion = self._chat_completion_with_retry(model_name=model_name, messages=messages, temperature=temp, json_mode=False)
                 self.root.after(0, callback, completion.choices[0].message.content)
             except Exception as e:
-                if 'multimodal' in str(e).lower() or 'image' in str(e).lower():
-                    self.root.after(0, self.on_task_error, f"""模型 '{self.selected_model_for_conversion.get()}' 可能不支持图片输入。请在"OLLAMA设置"中选择一个多模态模型（例如 LLaVA）。\n\n详细错误: {e}""")
-                else:
-                    self.root.after(0, self.on_task_error, str(e))
+                self.root.after(0, self.on_task_error, str(e))
         threading.Thread(target=ai_task, daemon=True).start()
 
     def segment_chinese_text(self):
@@ -1038,7 +1198,7 @@ class PromptApp:
 
     def translate_to_english(self):
         prompts = self._get_prompts_from_ui()
-        user_content = {'prompts_to_translate': prompts}
+        user_content = self._build_grouped_translation_payload(prompts)
 
         def callback(response_text):
             self._process_ai_response(response_text, list(prompts.keys()), on_translation_success)
@@ -1050,6 +1210,30 @@ class PromptApp:
             self.conversion_progressbar.stop()
             self.update_button_states()
         self._prepare_and_run_ai_task(self.convert_en_button, '正在转换为英文...', 'English Translation', user_content, callback)
+
+    def _build_grouped_translation_payload(self, prompts):
+        """
+        构建“按提示词全名分组”的翻译输入，避免多段正负提示词互相串段。
+        输出同时包含:
+        - prompt_groups: 用于给模型提供分组上下文
+        - flat_prompts: 用于强约束输出键与UI精确映射
+        """
+        summary_table = self._get_prepared_summary_table()
+        if not summary_table:
+            return {'prompt_groups': [], 'flat_prompts': prompts}
+        grouped = {}
+        for item in summary_table:
+            if item.get('injection_type') != 'prompt':
+                continue
+            display_name = item.get('display_name')
+            if display_name not in prompts:
+                continue
+            full_name = item.get('full_node_name', display_name)
+            group = grouped.setdefault(full_name, {'full_name': full_name, 'segments': []})
+            keywords = item.get('keywords', [])
+            seg_type = 'negative' if 'negative' in keywords else 'positive'
+            group['segments'].append({'display_name': display_name, 'keywords': keywords, 'type': seg_type, 'text': prompts.get(display_name, '')})
+        return {'prompt_groups': list(grouped.values()), 'flat_prompts': prompts}
 
     def supplement_with_instructions(self):
         """专业化调整 (开源版默认跳过)"""
@@ -1080,6 +1264,10 @@ class PromptApp:
         self.chinese_segmented = False
         self.english_translated = False
         self.english_supplemented = False
+        if hasattr(self, 'preview_frame'):
+            self.preview_frame.pack_forget()
+            self.preview_label.config(image='', text='暂无预览图')
+            self.current_preview_file = None
         if clear_ui:
             self._clear_all_tabs()
         self.update_button_states()
@@ -1192,208 +1380,100 @@ class PromptApp:
         return (nodes_map, {'destination_node_ids': destination_node_ids})
 
     def _categorize_workflow(self, nodes, nodes_map, graph_topology):
-        """阶段一：基于扩展节点知识库和图拓扑的工作流分类算法。"""
+        """阶段一：基于节点类型的工作流分类算法。"""
+        node_types = {n.get('type') for n in nodes}
         VIDEO_OUTPUT_NODE_TYPES = {'SaveAnimatedWEBP', 'SaveAnimatedPNG', 'SaveAnimation', 'VHS_VideoCombine', 'ExportVideo', 'VideoCombine'}
-        IMAGE_OUTPUT_NODE_TYPES = {'SaveImage', 'PreviewImage'}
-        VIDEO_FINGERPRINT_NODE_TYPES = {'SVD_img2vid_Conditioning', 'VideoLinearCFGGuidance', 'AnimateDiffCombine'}
-        VIDEO_FINGERPRINT_SUBSTRINGS = {'AnimateDiffLoader'}
-        IMAGE_INPUT_NODE_TYPES = {'LoadImage', 'LoadImageMask', 'ImageLoad', 'ImpactLoadImage'}
-        all_node_types = {n.get('type', '') for n in nodes}
-        all_node_ids = set(nodes_map.keys())
-        source_node_ids = graph_topology.get('source_node_ids', set())
-        destination_node_ids = graph_topology.get('destination_node_ids', set())
-        initial_node_ids = all_node_ids - destination_node_ids
-        final_node_ids = all_node_ids - source_node_ids
-        initial_node_types = {nodes_map[nid]['type'] for nid in initial_node_ids if nid in nodes_map}
-        final_node_types = {nodes_map[nid]['type'] for nid in final_node_ids if nid in nodes_map}
-        has_video_output = any((t in VIDEO_OUTPUT_NODE_TYPES for t in final_node_types))
-        has_image_input = any((t in IMAGE_INPUT_NODE_TYPES for t in initial_node_types))
-        has_video_fingerprint = any((t in VIDEO_FINGERPRINT_NODE_TYPES for t in all_node_types)) or any((any((sub in t for t in all_node_types)) for sub in VIDEO_FINGERPRINT_SUBSTRINGS))
-        if has_video_output or has_video_fingerprint:
+        IMAGE_INPUT_NODE_TYPES = {'LoadImage'}
+        has_video_output = any((t in VIDEO_OUTPUT_NODE_TYPES for t in node_types))
+        has_image_input = any((t in IMAGE_INPUT_NODE_TYPES for t in node_types))
+        if has_video_output:
             return '文生图'
-        has_image_output = any((t in IMAGE_OUTPUT_NODE_TYPES for t in final_node_types))
-        if has_image_output:
+        else:
             return '文生图'
-        return '未分类'
-
-    def _identify_injection_points(self, nodes, nodes_map, graph_topology, workflow_data):
-        """阶段二：识别所有提示词注入点，并包含节点顺序号。"""
-        injection_points = []
-        unnamed_node_counter = 1
-        consumer_map = {}
-        for link_details in workflow_data.get('links', []):
-            try:
-                source_id = str(link_details[1])
-                target_id = str(link_details[3])
-                if source_id not in consumer_map:
-                    consumer_map[source_id] = []
-                consumer_map[source_id].append(target_id)
-            except (IndexError, TypeError):
-                continue
-        candidate_nodes = [node for node in nodes_map.values() if 'CLIPTextEncode' in node.get('type', '')]
-        for node in candidate_nodes:
-            try:
-                widget_info = None
-                if 'widgets_values' in node and isinstance(node['widgets_values'], list):
-                    for (i, value) in enumerate(node['widgets_values']):
-                        if isinstance(value, str):
-                            widget_info = {'type': 'widgets_values', 'index': i}
-                            break
-                elif 'inputs' in node and any((inp.get('name') == 'text' for inp in node['inputs'])):
-                    widget_info = {'type': 'inputs', 'name': 'text'}
-                if not widget_info:
-                    continue
-                title = node.get('title', '').strip()
-                is_unnamed = not title
-                type_from_title = 'positive' if re.search('positive|正面', title, re.I) else 'negative' if re.search('negative|负面', title, re.I) else 'unknown'
-                modifier_from_title = 'base' if re.search('base|main|主体', title, re.I) else 'inpaint' if re.search('inpaint|重绘', title, re.I) else 'refine' if re.search('refine|精炼|修复', title, re.I) else 'face' if re.search('face|面部', title, re.I) else 'hand' if re.search('hand|手部', title, re.I) else 'person' if re.search('person|身体|全身', title, re.I) else 'base'
-                final_type = type_from_title
-                final_modifier = modifier_from_title
-                found_consumer = False
-                q = deque([(str(node['id']), 0)])
-                visited = {str(node['id'])}
-                while q:
-                    (current_id, depth) = q.popleft()
-                    if depth > 5:
-                        continue
-                    downstream_consumers = consumer_map.get(current_id, [])
-                    for consumer_id in downstream_consumers:
-                        if consumer_id in visited:
-                            continue
-                        visited.add(consumer_id)
-                        q.append((consumer_id, depth + 1))
-                        consumer_node = nodes_map.get(consumer_id)
-                        if not consumer_node:
-                            continue
-                        consumer_type = consumer_node.get('type', '')
-                        for inp in consumer_node.get('inputs', []):
-                            link_info = inp.get('link')
-                            is_linked_to_current = False
-                            if link_info is not None:
-                                if isinstance(link_info, list) and str(link_info[0]) == current_id:
-                                    is_linked_to_current = True
-                                else:
-                                    for link_detail in workflow_data.get('links', []):
-                                        if str(link_detail[0]) == str(link_info) and str(link_detail[1]) == current_id:
-                                            is_linked_to_current = True
-                                            break
-                            if is_linked_to_current and inp.get('name') in ['positive', 'negative']:
-                                final_type = inp.get('name')
-                        if 'FaceDetailer' in consumer_type:
-                            final_modifier = 'face'
-                            found_consumer = True
-                        elif 'KSampler' in consumer_type or 'SamplerCustom' in consumer_type:
-                            found_consumer = True
-                        elif 'BasicGuider' in consumer_type:
-                            found_consumer = True
-                if final_type == 'unknown':
-                    final_type = 'positive'
-                segment = f'{final_modifier}_{final_type}'
-                if is_unnamed:
-                    property_str = segment
-                    title = f'UNKNOWN{unnamed_node_counter}({property_str})'
-                    unnamed_node_counter += 1
-                node_type = node.get('type', '')
-                if 'CLIPTextEncode' in node_type and (found_consumer or type_from_title != 'unknown'):
-                    node_order_number = next((i for (i, n) in enumerate(nodes) if str(n.get('id')) == str(node.get('id'))), -1)
-                    injection_points.append({'segment': segment, 'node_id': str(node['id']), 'node_title': title, 'node_type': node.get('type'), 'widget_info': widget_info, 'node_order_number': node_order_number})
-            except Exception as e:
-                print(f"分析节点 {node.get('id')} 出错: {e}")
 
     def execute_workflow(self):
-        """执行工作流注入：将提示词结果注入到 ComfyUI 工作流 JSON 中。"""
-        workflow_filename = self.specific_workflow_var.get()
-        if not workflow_filename:
-            messagebox.showwarning('警告', '请先选择一个具体的工作流文件。')
+        """
+        执行工作流注入。
+        此函数从UI获取最终的、可能被用户修改过的提示词，
+        然后将它们注入到选定的工作流JSON文件中，并将其复制到ComfyUI目录。
+        """
+        specific_workflow = self.specific_workflow_combo.get()
+        if not specific_workflow:
+            messagebox.showwarning('警告', '请选择具体工作流文件')
             return
-        proj_path = self.proj_path.get()
-        json_path = os.path.join(proj_path, workflow_filename)
+        analysis_data = self.workflow_analysis_cache.get(specific_workflow)
+        if not analysis_data:
+            messagebox.showerror('错误', '未找到当前工作流的分析数据。请先执行“识别工作流”。')
+            return
+        summary_table = self._get_prepared_summary_table()
+        if not summary_table:
+            messagebox.showerror('错误', '工作流分析数据无效，缺少简表。')
+            return
+        prompts_to_inject = self._get_prompts_from_ui()
+        image_path_to_inject = self.image_path_var.get()
+        has_prompt_content = any((value.strip() for value in prompts_to_inject.values()))
+        has_image_content = bool(image_path_to_inject.strip())
+        if not has_prompt_content and (not has_image_content):
+            return messagebox.showwarning('警告', '没有找到任何有效的提示词或图片进行注入。')
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
-                workflow_data = json.load(f)
-            prompts_to_inject = self._get_prompts_from_ui()
-            image_path_to_inject = self.image_path_var.get().strip()
-            analysis_data = self.workflow_analysis_cache.get(workflow_filename, {})
-            summary_table = self._get_prepared_summary_table()
-            if not summary_table:
-                messagebox.showwarning('警告', '该工作流没有可用的注入点。')
+            workflow_path = os.path.join(self.proj_path.get(), specific_workflow)
+            if not os.path.exists(workflow_path):
+                messagebox.showerror('错误', f'工作流文件不存在: {workflow_path}')
                 return
-            updated_count = self._inject_data_into_workflow(workflow_data, summary_table, prompts_to_inject, image_path_to_inject)
-            if updated_count > 0:
-                backup_path = json_path + '.bak'
-                if not os.path.exists(backup_path):
-                    shutil.copy2(json_path, backup_path)
-                with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(workflow_data, f, indent=4, ensure_ascii=False)
+            backup_path = f'{workflow_path}.backup'
+            shutil.copy2(workflow_path, backup_path)
+            with open(workflow_path, 'r', encoding='utf-8') as f:
+                workflow_data = json.load(f)
+            updated_nodes_count = self.update_workflow_nodes(workflow_data, prompts_to_inject, image_path_to_inject, summary_table)
+            if updated_nodes_count > 0:
+                with open(workflow_path, 'w', encoding='utf-8') as f:
+                    json.dump(workflow_data, f, indent=2, ensure_ascii=False)
                 comfyui_base = self._find_comfyui_path()
-                sync_msg = ''
-                if comfyui_base:
-                    target_dir = os.path.join(comfyui_base, 'user', 'default', 'workflows')
+                if not comfyui_base:
+                    messagebox.showwarning('未找到 ComfyUI', '未能在程序前后三层目录内找到 ComfyUI 运行文件夹。\n\n工作流 JSON 已保存到源目录，但未自动同步到 ComfyUI。\n请手动将文件复制到 ComfyUI 的 user/default/workflows 目录。')
+                    self.status_var.set(f'已注入工作流，但未找到 ComfyUI 目录。')
+                    self.run_comfyui_button.config(state='normal', style='Run.TButton')
+                    self.current_injected_workflow_path = workflow_path
+                    return
+                comfyui_workflows_dir = os.path.join(comfyui_base, 'user', 'default', 'workflows')
+                if not os.path.exists(comfyui_workflows_dir):
                     try:
-                        if not os.path.exists(target_dir):
-                            os.makedirs(target_dir, exist_ok=True)
-                        target_path = os.path.join(target_dir, workflow_filename)
-                        shutil.copy2(json_path, target_path)
-                        sync_msg = f'\n\n已同步至 ComfyUI 目录:\n{target_path}'
-                    except Exception as e:
-                        sync_msg = f'\n\n同步至 ComfyUI 失败: {e}'
+                        os.makedirs(comfyui_workflows_dir, exist_ok=True)
+                    except OSError as e:
+                        messagebox.showerror('创建目录失败', f'无法创建ComfyUI工作流目录:\n{comfyui_workflows_dir}\n错误: {e}')
+                        return
+                target_path = os.path.join(comfyui_workflows_dir, specific_workflow)
+                shutil.copy2(workflow_path, target_path)
+                self.status_var.set(f'已复制工作流到ComfyUI: {specific_workflow}')
+                injected_parts = []
+                if has_prompt_content:
+                    injected_parts.append('提示词')
+                if has_image_content:
+                    injected_parts.append('图片')
+                if injected_parts:
+                    parts_str = ' 和 '.join(injected_parts)
+                    final_message = f'{parts_str}已成功注入并复制到ComfyUI工作流:\n{specific_workflow}'
+                    self.status_var.set(f'{parts_str}已成功注入！')
+                    self.run_comfyui_button.config(state='normal', style='Run.TButton')
+                    self.current_injected_workflow_path = target_path
+                    messagebox.showinfo('注入成功', final_message)
                 else:
-                    sync_msg = '\n\n提示: 未在程序前后三层目录内找到 ComfyUI 运行文件夹，未执行自动同步。'
-                self.status_var.set(f'注入完成：成功更新了 {updated_count} 个节点。')
-                messagebox.showinfo('成功', f'工作流已更新！\n\n成功注入了 {updated_count} 个节点。\n原文件已备份为: {os.path.basename(backup_path)}{sync_msg}')
+                    success_message = '注入操作已完成。'
+                    messagebox.showinfo('操作完成', success_message)
             else:
-                messagebox.showwarning('提示', '未找到匹配的节点进行注入，请检查工作流文件。')
+                messagebox.showinfo('注入提醒', '已生成提示词，但在工作流中没有找到可更新的节点。请检查工作流文件或算法分析结果。')
         except Exception as e:
-            self.on_task_error(f'执行工作流注入失败: {e}')
+            messagebox.showerror('执行错误', f'执行工作流时出错: {str(e)}')
 
-    def _find_comfyui_path(self):
-        """
-        在程序运行文件夹的前后三层内搜索 ComfyUI 文件夹。
-        确保路径中不包含多余的 'proj'。
-        """
-        start_dir = os.path.dirname(os.path.abspath(__file__))
-        current = start_dir
-        for _ in range(4):
-            candidate = os.path.join(current, 'ComfyUI')
-            if os.path.isdir(candidate):
-                if os.path.exists(os.path.join(candidate, 'main.py')) or os.path.exists(os.path.join(candidate, 'nodes.py')):
-                    return candidate
-            parent = os.path.dirname(current)
-            if parent == current:
-                break
-            current = parent
-
-        def search_down(path, depth):
-            if depth > 3:
-                return None
-            try:
-                items = os.listdir(path)
-            except:
-                return None
-            for item in items:
-                full_path = os.path.join(path, item)
-                if os.path.isdir(full_path):
-                    if item.lower() == 'comfyui':
-                        if os.path.exists(os.path.join(full_path, 'main.py')) or os.path.exists(os.path.join(full_path, 'nodes.py')):
-                            return full_path
-                    res = search_down(full_path, depth + 1)
-                    if res:
-                        return res
-            return None
-        return search_down(start_dir, 1)
-
-    def _inject_data_into_workflow(self, workflow_data, summary_table, prompts_to_inject, image_path_to_inject):
-        """核心注入逻辑"""
+    def update_workflow_nodes(self, workflow_data, prompts_to_inject, image_path_to_inject, summary_table):
+        """根据简表分析结果，将UI中的提示词和图片路径精确注入到工作流节点中。"""
         updated_count = 0
-        nodes_dict = {}
-        if 'nodes' in workflow_data and isinstance(workflow_data['nodes'], list):
-            nodes_dict = {str(n.get('id')): n for n in workflow_data['nodes']}
-        else:
-            nodes_dict = {str(k): v for (k, v) in workflow_data.items() if isinstance(v, dict) and 'class_type' in v}
+        is_list_format = 'nodes' in workflow_data and isinstance(workflow_data['nodes'], list)
+        nodes_dict = {str(node['id']): node for node in workflow_data['nodes']} if is_list_format else workflow_data
         for item in summary_table:
-            node_id = str(item['injection_location']['node_id'])
             injection_type = item['injection_type']
             details = item['injection_location']
+            node_id = details['node_id']
             node = nodes_dict.get(node_id)
             if not node:
                 continue
@@ -1464,6 +1544,42 @@ class PromptApp:
         if not added_negative_tabs and segmented_data.get('negative'):
             self.add_negative_prompt_tab('负面提示词', segmented_data.get('negative', ''), height=5)
 
+    def _find_comfyui_path(self):
+        """
+        在程序运行文件夹的前后三层内搜索 ComfyUI 文件夹。
+        确保路径中不包含多余的 'proj'。
+        """
+        start_dir = os.path.dirname(os.path.abspath(__file__))
+        current = start_dir
+        for _ in range(4):
+            candidate = os.path.join(current, 'ComfyUI')
+            if os.path.isdir(candidate):
+                if os.path.exists(os.path.join(candidate, 'main.py')) or os.path.exists(os.path.join(candidate, 'nodes.py')):
+                    return candidate
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+
+        def search_down(path, depth):
+            if depth > 3:
+                return None
+            try:
+                items = os.listdir(path)
+            except Exception:
+                return None
+            for item in items:
+                full_path = os.path.join(path, item)
+                if os.path.isdir(full_path):
+                    if item.lower() == 'comfyui':
+                        if os.path.exists(os.path.join(full_path, 'main.py')) or os.path.exists(os.path.join(full_path, 'nodes.py')):
+                            return full_path
+                    res = search_down(full_path, depth + 1)
+                    if res:
+                        return res
+            return None
+        return search_down(start_dir, 1)
+
     def _init_watermark(self):
         """
         跨平台专家级镂空水印：针对 macOS M2 和 Windows 的深度兼容性修复
@@ -1499,7 +1615,7 @@ class PromptApp:
                 try:
                     wm.attributes('-transparent', True)
                     wm.attributes('-alpha', 1.0)
-                except:
+                except Exception:
                     pass
             else:
                 bg_color = '#FF00FF'
@@ -1519,7 +1635,7 @@ class PromptApp:
             self._wm_rel_x = rw - ww - 40
             self._wm_rel_y = 40
             self._wm_canvas.bind('<Button-1>', self._start_wm_drag)
-            self.image_label.bind('<B1-Motion>', self._do_wm_drag)
+            self._wm_canvas.bind('<B1-Motion>', self._do_wm_drag)
             self._sync_wm_position()
             print(f'水印专家级修复完成 (原生透明模式): 系统={sys.platform}')
         except Exception as e:
@@ -1546,7 +1662,7 @@ class PromptApp:
             self._wm_rel_y = max(0, min(self._wm_rel_y, rh - wh))
             self._watermark_widget.geometry(f'+{rx + self._wm_rel_x}+{ry + self._wm_rel_y}')
             self._watermark_widget.lift()
-        except:
+        except Exception:
             pass
 
     def _start_wm_drag(self, event):
@@ -1565,7 +1681,7 @@ class PromptApp:
             self._wm_rel_x = max(0, min(new_rel_x, rw - ww))
             self._wm_rel_y = max(0, min(new_rel_y, rh - wh))
             self._watermark_widget.geometry(f'+{rx + self._wm_rel_x}+{ry + self._wm_rel_y}')
-        except:
+        except Exception:
             pass
 
     def _ensure_watermark_integrity(self):
@@ -1582,8 +1698,204 @@ class PromptApp:
 
     def on_closing(self):
         """程序关闭时清理"""
-        self.ollama_manager.stop_ollama()
+        try:
+            self.ollama_manager.stop_ollama()
+        except Exception:
+            pass
         self.root.destroy()
+
+    def _convert_ui_to_api(self, workflow_data):
+        """将 ComfyUI 的 UI 工作流格式 (含有 nodes 和 links) 转换为 API 格式 (Prompt)"""
+        api_prompt = {}
+        nodes = workflow_data.get('nodes', [])
+        links = workflow_data.get('links', [])
+        links_map = {link[0]: link for link in links}
+        for node in nodes:
+            node_id = str(node['id'])
+            api_node = {'class_type': node['type'], 'inputs': {}}
+            if 'inputs' in node and isinstance(node['inputs'], list):
+                for inp in node['inputs']:
+                    if 'link' in inp and inp['link'] is not None:
+                        link_id = inp['link']
+                        if link_id in links_map:
+                            l = links_map[link_id]
+                            api_node['inputs'][inp['name']] = [str(l[1]), l[2]]
+                    elif 'value' in inp:
+                        api_node['inputs'][inp['name']] = inp['value']
+            if 'widgets_values' in node:
+                w_values = node['widgets_values']
+                if node['type'] == 'CLIPTextEncode' and len(w_values) > 0:
+                    api_node['inputs']['text'] = w_values[0]
+                elif node['type'] == 'LoadImage' and len(w_values) > 0:
+                    api_node['inputs']['image'] = w_values[0]
+                elif node['type'] == 'CheckpointLoaderSimple' and len(w_values) > 0:
+                    api_node['inputs']['ckpt_name'] = w_values[0]
+                elif node['type'] == 'EmptyLatentImage' and len(w_values) >= 2:
+                    api_node['inputs']['width'] = w_values[0]
+                    api_node['inputs']['height'] = w_values[1]
+                elif node['type'] == 'KSampler' and len(w_values) >= 4:
+                    api_node['inputs']['seed'] = w_values[0]
+                    api_node['inputs']['steps'] = w_values[1]
+                    api_node['inputs']['cfg'] = w_values[2]
+                    api_node['inputs']['sampler_name'] = w_values[3]
+                    if len(w_values) > 4:
+                        api_node['inputs']['scheduler'] = w_values[4]
+                    if len(w_values) > 5:
+                        api_node['inputs']['denoise'] = w_values[5]
+                else:
+                    pass
+            api_prompt[node_id] = api_node
+        return api_prompt
+
+    def run_comfyui_workflow(self):
+        """向 ComfyUI 发送运行请求"""
+        if not hasattr(self, 'current_injected_workflow_path') or not self.current_injected_workflow_path:
+            messagebox.showerror('错误', '没有可运行的工作流。请先执行注入。')
+            return
+        workflow_path = self.current_injected_workflow_path
+        try:
+            with open(workflow_path, 'r', encoding='utf-8') as f:
+                workflow_json = json.load(f)
+        except Exception as e:
+            messagebox.showerror('错误', f'无法读取注入后的工作流文件:\n{e}')
+            return
+        is_ui_format = 'nodes' in workflow_json and isinstance(workflow_json['nodes'], list)
+        if is_ui_format:
+            self.status_var.set('正在转换工作流格式 (UI -> API)...')
+            try:
+                workflow_json = self._convert_ui_to_api(workflow_json)
+            except Exception as e:
+                messagebox.showerror('转换失败', f'将工作流转换为 API 格式时出错:\n{e}')
+                return
+        comfyui_url = 'http://127.0.0.1:8188/prompt'
+        client_id = str(uuid.uuid4())
+        payload = {'prompt': workflow_json, 'client_id': client_id}
+        self.status_var.set('正在发送工作流至 ComfyUI...')
+        self.run_comfyui_button.config(state='disabled')
+        self.preview_label.config(image='', text='正在连接 ComfyUI，请稍候...')
+        self.preview_frame.pack(fill='both', expand=True, pady=(5, 0))
+        self.root.update_idletasks()
+
+        def send_request():
+            try:
+                response = requests.post(comfyui_url, json=payload, timeout=10)
+                if response.status_code == 500:
+                    error_data = response.text
+                    self.root.after(0, lambda : messagebox.showerror('ComfyUI 服务器错误 (500)', f'ComfyUI 服务器拒绝了请求。这通常是因为节点输入缺失或格式不兼容。\n\n详细错误: {error_data}'))
+                    self.root.after(0, lambda : self.run_comfyui_button.config(state='normal'))
+                    self.root.after(0, lambda : self.status_var.set('ComfyUI 执行失败'))
+                    return
+                response.raise_for_status()
+                data = response.json()
+                prompt_id = data.get('prompt_id')
+                if prompt_id:
+                    self.root.after(0, lambda : self.status_var.set(f'已发送，正在生成 (ID: {prompt_id})...'))
+                    self.root.after(0, lambda : self.preview_label.config(text=f'正在生成 (ID: {prompt_id})...\n请在 ComfyUI 控制台查看进度'))
+                    self.poll_comfyui_result(prompt_id)
+                else:
+                    self.root.after(0, lambda : messagebox.showwarning('警告', 'ComfyUI 接受了请求但未返回 Prompt ID'))
+                    self.root.after(0, lambda : self.run_comfyui_button.config(state='normal'))
+            except requests.exceptions.RequestException as e:
+                self.root.after(0, lambda : messagebox.showerror('连接失败', f'无法连接到 ComfyUI (127.0.0.1:8188)。请确保 ComfyUI 已启动。\n\n错误信息: {e}'))
+                self.root.after(0, lambda : self.run_comfyui_button.config(state='normal'))
+                self.root.after(0, lambda : self.status_var.set('ComfyUI 连接失败'))
+        threading.Thread(target=send_request, daemon=True).start()
+
+    def poll_comfyui_result(self, prompt_id):
+        """轮询 ComfyUI 获取执行结果和生成的图像/视频"""
+        comfyui_history_url = f'http://127.0.0.1:8188/history/{prompt_id}'
+
+        def poll():
+            max_attempts = 120
+            attempts = 0
+            while attempts < max_attempts:
+                time.sleep(5)
+                attempts += 1
+                try:
+                    res = requests.get(comfyui_history_url, timeout=5)
+                    if res.status_code == 200:
+                        history = res.json()
+                        if prompt_id in history:
+                            outputs = history[prompt_id].get('outputs', {})
+                            generated_files = []
+                            for (node_id, output_data) in outputs.items():
+                                if 'images' in output_data:
+                                    for img in output_data['images']:
+                                        generated_files.append(img)
+                                elif 'gifs' in output_data:
+                                    for gif in output_data['gifs']:
+                                        generated_files.append(gif)
+                            self.root.after(0, lambda : self.on_comfyui_success(generated_files))
+                            return
+                except Exception as e:
+                    print(f'轮询错误: {e}')
+                    pass
+            self.root.after(0, lambda : self.status_var.set('等待 ComfyUI 超时。'))
+            self.root.after(0, lambda : self.run_comfyui_button.config(state='normal'))
+        threading.Thread(target=poll, daemon=True).start()
+
+    def on_comfyui_success(self, generated_files):
+        """ComfyUI 执行成功回调，处理并显示预览"""
+        self.status_var.set('ComfyUI 执行完毕！')
+        self.run_comfyui_button.config(state='normal')
+        if not generated_files:
+            messagebox.showinfo('完成', 'ComfyUI 运行完成，但未找到输出图像或视频。')
+            return
+        first_file = generated_files[0]
+        filename = first_file.get('filename')
+        subfolder = first_file.get('subfolder', '')
+        file_type = first_file.get('type', 'output')
+        if not filename:
+            return
+        view_url = f'http://127.0.0.1:8188/view?filename={filename}&subfolder={subfolder}&type={file_type}'
+        try:
+            res = requests.get(view_url, timeout=10)
+            res.raise_for_status()
+            temp_dir = os.path.join(os.getcwd(), 'temp_preview')
+            os.makedirs(temp_dir, exist_ok=True)
+            local_path = os.path.join(temp_dir, filename)
+            with open(local_path, 'wb') as f:
+                f.write(res.content)
+            self.current_preview_file = local_path
+            self.preview_frame.pack(fill='both', expand=True, pady=(5, 0))
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                self.show_image_preview(local_path)
+            else:
+                self.preview_label.config(text=f'生成了视频/动图: {filename}\n(双击打开)')
+            self.status_var.set(f'已生成: {filename} (双击预览框打开)')
+        except Exception as e:
+            print(f'下载预览文件失败: {e}')
+            self.preview_label.config(text=f'已生成 {filename}，但在获取预览时失败。')
+
+    def show_image_preview(self, image_path):
+        """使用 PIL 缩放并显示预览图"""
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(image_path)
+            max_size = (400, 300)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self.preview_label.image = photo
+            self.preview_label.config(image=photo, text='')
+        except ImportError:
+            self.preview_label.config(text=f'已生成图片 (缺少 PIL 库无法预览)\n双击此处外部打开')
+        except Exception as e:
+            self.preview_label.config(text=f'图片预览失败\n{e}')
+
+    def open_preview_file(self, event=None):
+        """双击预览区域时使用系统默认程序打开文件"""
+        if self.current_preview_file and os.path.exists(self.current_preview_file):
+            try:
+                if sys.platform == 'darwin':
+                    subprocess.call(('open', self.current_preview_file))
+                elif os.name == 'nt':
+                    os.startfile(self.current_preview_file)
+                elif os.name == 'posix':
+                    subprocess.call(('xdg-open', self.current_preview_file))
+                self.preview_frame.pack_forget()
+                self.current_preview_file = None
+            except Exception as e:
+                messagebox.showerror('错误', f'无法打开文件: {e}')
 
 def main():
     root = tk.Tk()
