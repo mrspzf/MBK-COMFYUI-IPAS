@@ -3,7 +3,7 @@
 # MBK-COMFYUI-INTELLIPROMPTAUTOMATION-SYSTEM
 # MBK-COMFYUI-IPAS
 
-版本：1.0.912
+版本：1.0.913
 性能稳定优化和新增功能：
    - ✅ OllamaManager 类（HTTP 重试/超时）
    - ✅ 多模型自适应
