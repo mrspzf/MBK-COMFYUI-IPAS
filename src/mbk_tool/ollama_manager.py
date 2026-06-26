@@ -29,6 +29,8 @@ OLLAMA_BASE_URL = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
 MODEL_LIBRARY_URL = 'https://ollama.com/library'
 
 # --- Cross-Module Symbol Injection ---
+try: from mbk_tool.utils import * 
+except: pass
 try: from mbk_tool.prompt_app import * 
 except: pass
 try: from mbk_tool.main import * 
@@ -59,36 +61,6 @@ MODEL_PARAMS_CONFIG = {'qw3.5': {'num_ctx': 16384, 'temperature': 0.7}, 'qwen3.5
 WORKFLOWS = {'文生图片': {'type': '文生图', 'positive_node_title': 'Positive Prompt', 'negative_node_title': 'Negative Prompt'}, '文生图-FLUX': {'type': '文生图-FLUX', 'positive_node_title': 'Positive Prompt (FLUX Base)', 'negative_node_title': 'Negative Prompt (FLUX Base)'}}
 
 PROFESSIONAL_STYLES = ['默认风格 (Default Style)', '电影感 (Cinematic)', '照片写实 (Photorealistic)', '概念艺术 (Concept Art)', '数字绘画 (Digital Painting)', '幻想艺术 (Fantasy Art)', '科幻风格 (Science Fiction)', '赛博朋克 (Cyberpunk)', '蒸汽朋克 (Steampunk)', '复古风格 (Retro Style)', '极简主义 (Minimalism)', '哥特风格 (Gothic)', '抽象艺术 (Abstract)', '超现实主义 (Surrealism)', '印象派 (Impressionism)', '波普艺术 (Pop Art)', '装饰风艺术 (Art Deco)', '新艺术运动 (Art Nouveau)', '巴洛克风格 (Baroque)', '未来主义 (Futurism)', '立体主义 (Cubism)', '古典主义 (Classicism)', '文艺复兴 (Renaissance)', '动漫风格 (Anime Style)', '漫画风格 (Comic Book Style)', '卡通风格 (Cartoon Style)', '水墨画 (Ink Wash Painting)', '水彩画 (Watercolor)', '素描 (Sketch)', '插画 (Illustration)', '人像摄影 (Portrait Photography)', '风光摄影 (Landscape Photography)', '微距摄影 (Macro Photography)', '长曝光 (Long Exposure)', '双重曝光 (Double Exposure)', '黄金时刻 (Golden Hour)', '蓝调时刻 (Blue Hour)', '航拍摄影 (Aerial Photography)', '单色摄影 (Monochrome)', '虚幻引擎 (Unreal Engine)', '辛烷值渲染 (Octane Render)', '光线追踪 (Ray Tracing)', '卡通渲染 (Cel Shading)', '低多边形 (Low Poly)', '体素艺术 (Voxel Art)', '等距视角 (Isometric)', '3D模型 (3D Model)']
-
-def get_model_params(model_name):
-    """根据模型名称获取推荐的上下文参数，适配 Ollama 20.4+ 交互算法
-    
-    注意: 移除 num_predict 避免限制或强制模型生成长度，让模型自然停止。
-    """
-    if not model_name:
-        return {'num_ctx': 16384}
-    model_lower = model_name.lower()
-    for key in ['qw3.5', 'qwen3.5']:
-        if key in model_lower:
-            return MODEL_PARAMS_CONFIG[key]
-    if model_name in MODEL_PARAMS_CONFIG:
-        return MODEL_PARAMS_CONFIG[model_name]
-    for (config_name, params) in MODEL_PARAMS_CONFIG.items():
-        if model_name.startswith(config_name.replace(':latest', '')) or config_name.startswith(model_name.split(':')[0]):
-            return params
-    if any((x in model_lower for x in [':cloud', '-cloud', 'api-', 'claude-'])):
-        return {'num_ctx': 32768}
-    if 'gpt-' in model_lower and 'oss' not in model_lower:
-        return {'num_ctx': 16384}
-    if any((x in model_lower for x in ['120b', '122b'])):
-        return {'num_ctx': 16384}
-    if any((x in model_lower for x in ['235b', '397b', '675b', '80b', '400b'])):
-        return {'num_ctx': 16384}
-    if any((x in model_lower for x in ['27b', '31b', '37b', '70b', '72b'])):
-        return {'num_ctx': 16384}
-    if any((x in model_lower for x in ['7b', '8b', '13b', '14b', '32b'])):
-        return {'num_ctx': 16384}
-    return {'num_ctx': 16384}
 
 class OllamaManager:
 
