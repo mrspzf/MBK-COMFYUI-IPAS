@@ -29,7 +29,7 @@ OLLAMA_BASE_URL = os.environ.get('OLLAMA_HOST', 'http://localhost:11434')
 MODEL_LIBRARY_URL = 'https://ollama.com/library'
 
 # --- Cross-Module Symbol Injection ---
-try: from mbk_tool.utils import * 
+try: from mbk_tool.model_params import * 
 except: pass
 try: from mbk_tool.ollama_manager import * 
 except: pass
