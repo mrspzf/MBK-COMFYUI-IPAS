@@ -1,0 +1,861 @@
+{
+  "id": "ac3057c5-b171-4b87-82a8-a927fc830835",
+  "revision": 1,
+  "last_node_id": 20,
+  "last_link_id": 34,
+  "nodes": [
+    {
+      "id": 5,
+      "type": "KSampler",
+      "pos": [
+        833,
+        -85
+      ],
+      "size": [
+        315,
+        262
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 7
+        },
+        {
+          "localized_name": "正面条件",
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 5
+        },
+        {
+          "localized_name": "负面条件",
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 6
+        },
+        {
+          "localized_name": "Latent图像",
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 10
+        },
+        {
+          "localized_name": "种子",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "步数",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cfg",
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "采样器名称",
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "调度器",
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "降噪",
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "Latent",
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            23
+          ]
+        }
+      ],
+      "title": "KSampler (Base Pass)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        742352493740436,
+        "randomize",
+        20,
+        8,
+        "euler",
+        "normal",
+        1
+      ]
+    },
+    {
+      "id": 7,
+      "type": "VAEDecode",
+      "pos": [
+        1636,
+        210
+      ],
+      "size": [
+        210,
+        46
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "Latent",
+          "name": "samples",
+          "type": "LATENT",
+          "link": 24
+        },
+        {
+          "localized_name": "vae",
+          "name": "vae",
+          "type": "VAE",
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "图像",
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [
+        429,
+        -101
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 1
+        },
+        {
+          "localized_name": "文本",
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "条件",
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "title": "Positive Prompt (Base)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A vast lake surface like a mirror, soft morning light spreads across the water casting gentle golden ripples, the giant rocks by the lake are gently covered with moss, showing the passage of time and age. A young woman dressed in traditional Hanfu stands on the stone, her hair styled in an elegant high bun, adorned with delicate cloud-patterned hairpins, her face crystal-clear and mirror-like, with a faint calmness and concentration between her eyebrows and eyes. Her two hands lightly grip the piano keys, her fingers dance fluidly on the keys, the curves of her fingertips intertwine with light and shadow as if she is conveying each delicate note to the lake. Distant mountains rise in layers, shrouded in mist, the lush trees at the foot of the mountains, with occasional soft bird songs among the branches, adding a touch of liveliness to the scene. The overall composition, rendered with the delicate realism of photography, shows distinct layers of light and shadow, the fine lines on her face and the movements of her hands are vividly lifelike, as if one can hear the soft echo of the piano keys being gently brushed and feel the subtle ripples of lake water gently lapping against the rocks."
+      ]
+    },
+    {
+      "id": 10,
+      "type": "EmptyLatentImage",
+      "pos": [
+        431,
+        350
+      ],
+      "size": [
+        315,
+        106
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "宽度",
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "高度",
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "批量大小",
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "Latent",
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            10
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "EmptyLatentImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ]
+    },
+    {
+      "id": 8,
+      "type": "SaveImage",
+      "pos": [
+        1884,
+        211
+      ],
+      "size": [
+        210,
+        241
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "图片",
+          "name": "images",
+          "type": "IMAGE",
+          "link": 11
+        },
+        {
+          "localized_name": "文件名前缀",
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41"
+      },
+      "widgets_values": [
+        "ComfyUI_Txt2Img_Refined"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        4,
+        516
+      ],
+      "size": [
+        315,
+        98
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "Checkpoint名称",
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "ckpt_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            25
+          ]
+        },
+        {
+          "localized_name": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            31,
+            32
+          ]
+        },
+        {
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "links": []
+        }
+      ],
+      "title": "Load Checkpoint (Refiner)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "sd_xl_refiner_1.0.safetensors"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "KSampler",
+      "pos": [
+        1273,
+        210
+      ],
+      "size": [
+        315,
+        262
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "模型",
+          "name": "model",
+          "type": "MODEL",
+          "link": 25
+        },
+        {
+          "localized_name": "正面条件",
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 33
+        },
+        {
+          "localized_name": "负面条件",
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 34
+        },
+        {
+          "localized_name": "Latent图像",
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 23
+        },
+        {
+          "localized_name": "种子",
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "步数",
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "cfg",
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "采样器名称",
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "调度器",
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "降噪",
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "Latent",
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            24
+          ]
+        }
+      ],
+      "title": "KSampler (Refiner Pass)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "KSampler"
+      },
+      "widgets_values": [
+        5678,
+        "fixed",
+        25,
+        8,
+        "dpmpp_2m",
+        "karras",
+        0.25
+      ]
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [
+        426,
+        116
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        },
+        {
+          "localized_name": "文本",
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "条件",
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            6
+          ]
+        }
+      ],
+      "title": "Negative Prompt (Base)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "The lake surface is not mirror-like but muddy or lacking reflection, the morning light is not soft but glare or dim, the ripples are not golden but dark or nonexistent, the giant rocks lack moss coverage and are smooth and dry, the girl is not wearing traditional Hanfu but modern or casual clothing, her hair is not styled in a high bun but messy or low, the hairpins lack cloud patterns and are missing or ordinary, her face is not clear but blurred or distorted, her brows and eyes are not calm but tense or exaggerated in expression, her hands are not lightly gripping the piano keys but loose or not on the keys, her fingers are not dancing fluidly but stiff or not on the keys, the arcs of her fingertips are not intertwining with light and shadow but flat or distorted, the notes are not conveyed to the lake but are silent, the mountains are not layered but flat or missing, the mist is not swirling but absent or overly dense fog, the trees are not lush but withered or sparse, there are no bird songs among the branches, only silence, the overall composition is not realistic photography but blurry or low-resolution, the light and shadow layers are not distinct but mixed or monotone, the fine lines on the face are not clear but blurred or nonexistent, the hand movements are stiff or distorted."
+      ]
+    },
+    {
+      "id": 4,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        59.3447151184082,
+        167.44256591796875
+      ],
+      "size": [
+        315,
+        98
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "Checkpoint名称",
+          "name": "ckpt_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "ckpt_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "模型",
+          "name": "MODEL",
+          "type": "MODEL",
+          "slot_index": 0,
+          "links": [
+            7
+          ]
+        },
+        {
+          "localized_name": "CLIP",
+          "name": "CLIP",
+          "type": "CLIP",
+          "slot_index": 1,
+          "links": [
+            1,
+            2
+          ]
+        },
+        {
+          "localized_name": "VAE",
+          "name": "VAE",
+          "type": "VAE",
+          "slot_index": 2,
+          "links": [
+            9
+          ]
+        }
+      ],
+      "title": "Load Checkpoint (Base)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "CheckpointLoaderSimple"
+      },
+      "widgets_values": [
+        "sd_xl_base_1.0-2.safetensors"
+      ]
+    },
+    {
+      "id": 19,
+      "type": "CLIPTextEncode",
+      "pos": [
+        429,
+        500
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 31
+        },
+        {
+          "localized_name": "文本",
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "条件",
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            33
+          ]
+        }
+      ],
+      "title": "Positive Prompt (Refiner)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "A young woman in traditional Hanfu stands on a moss-covered giant rock, her hair styled in a high bun adorned with delicate cloud-patterned hairpins, her face crystal-clear and mirror-like, radiating a faint calmness and concentration between her eyebrows and eyes. Both hands lightly grip the piano keys, her fingers dance fluidly on the keys, the arcs of her fingertips intertwine with light and shadow as if she is speaking each delicate note to the lake. The piano key details are vividly lifelike, the fine lines on her face are clearly visible, her hand movements are natural and lively, the overall realistic photographic rendering is delicate, the layers of light and shadow are distinct, the lake water gently laps the rocks with subtle ripples, distant mountains rise in layers with mist swirling, the lush trees at the foot of the mountains, occasional soft bird songs among the branches, creating a tranquil yet lively atmosphere, one can hear the gentle echo of the piano keys being softly brushed."
+      ]
+    },
+    {
+      "id": 20,
+      "type": "CLIPTextEncode",
+      "pos": [
+        426,
+        717
+      ],
+      "size": [
+        380,
+        180
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "clip",
+          "name": "clip",
+          "type": "CLIP",
+          "link": 32
+        },
+        {
+          "localized_name": "文本",
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "条件",
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "title": "Negative Prompt (Refiner)",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.41",
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "The girl is not standing on a moss-covered giant rock but on flat ground or another location, her clothing is not traditional Hanfu but modern or casual attire, her hair is not styled in a high bun but messy or low, the hairpins are missing or ordinary without cloud-pattern details, her face is blurred or distorted without mirror-clear details, the expression between her brows and eyes is not calm but tense or exaggerated, her hands are not lightly gripping the piano keys but loose or not on the keys, her fingers are stiff or not on the keys, lacking fluid dancing motion, the arcs of her fingertips are flat or distorted without light and shadow interplay, the piano key details are blurred or invisible lacking realism, the fine lines on her face are not clear, appearing blurred or nonexistent, her hand movements are stiff or unnatural lacking liveliness, the light and shadow layers are mixed or monotone lacking clear layers, the lake water does not gently lap the rocks with subtle ripples but is either calm or turbulent, the mountains are not layered but flat or missing, the mist disappears or becomes overly dense breaking the layers, the trees are withered or sparse lacking lushness, there are no bird songs among the branches lacking vitality, the overall composition is not realistic photography but low-resolution or distorted, the facial details are not lifelike appearing stiff, the hand movements are unnatural lacking delicate rendering."
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      4,
+      1,
+      3,
+      0,
+      "CLIP"
+    ],
+    [
+      2,
+      4,
+      1,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      5,
+      3,
+      0,
+      5,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      6,
+      0,
+      5,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      7,
+      4,
+      0,
+      5,
+      0,
+      "MODEL"
+    ],
+    [
+      9,
+      4,
+      2,
+      7,
+      1,
+      "VAE"
+    ],
+    [
+      10,
+      10,
+      0,
+      5,
+      3,
+      "LATENT"
+    ],
+    [
+      11,
+      7,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      23,
+      5,
+      0,
+      16,
+      3,
+      "LATENT"
+    ],
+    [
+      24,
+      16,
+      0,
+      7,
+      0,
+      "LATENT"
+    ],
+    [
+      25,
+      15,
+      0,
+      16,
+      0,
+      "MODEL"
+    ],
+    [
+      31,
+      15,
+      1,
+      19,
+      0,
+      "CLIP"
+    ],
+    [
+      32,
+      15,
+      1,
+      20,
+      0,
+      "CLIP"
+    ],
+    [
+      33,
+      19,
+      0,
+      16,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      34,
+      20,
+      0,
+      16,
+      2,
+      "CONDITIONING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6803239336492896,
+      "offset": [
+        -163.58144024295714,
+        165.6011507185552
+      ]
+    }
+  },
+  "version": 0.4
+}

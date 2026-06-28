@@ -1,0 +1,354 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CLIPTextEncode",
+      "pos": [
+        400,
+        100
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Positive Prompt",
+      "widgets_values": [
+        "In a misty morning, the lake surface resembles silk brushed by a light veil, vast and distant; gentle ripples reflect the hazy glow of the sky. By the shore stands a massive stone weathered by time, its surface mottled yet still solid as before. Sitting on the stone is a young woman dressed in a classical silk robe; her hair is gathered high in a bun, adorned with several copper hair ornaments. Her brows and eyes are picture‑perfect; her face, highlighted by the thin fog, appears especially clear, like an exquisitely enlarged old photograph. The girl's fingertips lightly touch the keys of a vintage piano; the lacquered keyboard has taken on a warm retro brown from years of use, and the metal pedals glint faintly in the morning light. Each touch of her fingertips seems to draw an ancient melody from her hands, notes leaping across the lake surface, drifting with the wind, sketching a scene of time flowing backward. Her hand movements are clearly visible: the slight tremor of her knuckles, the soft curvature of her fingertips, and the delicate rotation of her wrists are amplified into an almost ceremonial beauty at this tranquil lakeside. Not far away, continuous mountains appear and disappear in the thin mist, with sparse pine forests dotted along the mid‑slopes; branches sway gently in the breeze, as if accompanying the girl's piano music. The outlines of the distant mountains are tinted with a faint retro yellow‑green, like the base color of old film stock, draping the whole scene in a nostalgic filter. The entire image resembles a carefully color‑graded frame of an old movie: muted brown tones, soft light and shadow, delicate grain, making one feel transported back to a serene era. The girl's visage becomes increasingly three‑dimensional in this vintage light; her eyes are as clear as stars, her slightly closed eyelids reveal immersion in the music; and her slender yet resolute fingers paint flowing melodies on the keyboard, like streams of time stirring ripples across the expansive lake."
+      ]
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [
+        400,
+        350
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Negative Prompt",
+      "widgets_values": [
+        "Should avoid depicting a night shrouded in dense dark fog; the lake surface should not be rough mud or polluted water, nor should it have the smooth, silky texture. The scene should not be narrow and close‑up, nor should there be violent, raging waters. The massive stone should not be a new smooth fragment, and its mottled ancient appearance should be avoided. The girl should not wear modern tattered clothing or casual attire, and the elegant image of a classical silk robe should be avoided. Her hair bun should not be messy, hair ornaments should not be rusted metal, and her brows and eyes should not be vague. The piano keyboard should not be rusted metal or dull lacquer, and the metal pedals should not glitter in the morning light. The musical notes should not scatter aimlessly on the lake surface, nor should they form a time‑reversing tableau. The mountains should not appear as bleak ruins, and the pine forest should not be wilted or lifeless. The overall color scheme should avoid muted brown soft light and the delicate grain of old films, and any nostalgic filter should be avoided."
+      ]
+    },
+    {
+      "id": 3,
+      "type": "CheckpointLoaderSimple",
+      "pos": [
+        10,
+        100
+      ],
+      "size": [
+        340,
+        100
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            1,
+            2
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            8
+          ],
+          "slot_index": 2
+        }
+      ],
+      "title": "Load Checkpoint",
+      "widgets_values": [
+        "sd_xl_base_1.0.safetensors"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "KSampler",
+      "pos": [
+        850,
+        100
+      ],
+      "size": [
+        300,
+        500
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 3
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 4
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 5
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "KSampler",
+      "widgets_values": [
+        123456789,
+        "randomize",
+        30,
+        8,
+        "euler",
+        "normal",
+        1
+      ]
+    },
+    {
+      "id": 5,
+      "type": "EmptyLatentImage",
+      "pos": [
+        400,
+        600
+      ],
+      "size": [
+        315,
+        100
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Empty Latent Image",
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ]
+    },
+    {
+      "id": 6,
+      "type": "VAEDecode",
+      "pos": [
+        1200,
+        100
+      ],
+      "size": [
+        210,
+        50
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "VAE Decode"
+    },
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "pos": [
+        1450,
+        100
+      ],
+      "size": [
+        210,
+        270
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9
+        }
+      ],
+      "title": "Save Image",
+      "widgets_values": [
+        "ComfyUI"
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      3,
+      1,
+      1,
+      0,
+      "CLIP"
+    ],
+    [
+      2,
+      3,
+      1,
+      2,
+      0,
+      "CLIP"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      0,
+      "MODEL"
+    ],
+    [
+      4,
+      1,
+      0,
+      4,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      5,
+      2,
+      0,
+      4,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      6,
+      5,
+      0,
+      4,
+      3,
+      "LATENT"
+    ],
+    [
+      7,
+      4,
+      0,
+      6,
+      0,
+      "LATENT"
+    ],
+    [
+      8,
+      3,
+      2,
+      6,
+      1,
+      "VAE"
+    ],
+    [
+      9,
+      6,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}
