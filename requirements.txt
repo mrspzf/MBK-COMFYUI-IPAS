@@ -1,4 +1,10 @@
+difflib
+functools
 openai
 pillow
+platform
 requests
+signal
 urllib3
+webbrowser
+websocket
